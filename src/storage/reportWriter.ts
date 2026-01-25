@@ -3,13 +3,13 @@
  *
  * Writes report.json and report.md to .verified/
  *
- * To be fully implemented by another agent (reportGenerator).
- * This scaffold provides basic file writing capability.
+ * After writing reports, attempts to hide the .verified folder on Windows and macOS.
  */
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { MachineReport } from '../types/report';
+import { hideVerifiedFolder } from '../utils/hideVerifiedFolder.js';
 
 /**
  * Report paths within .verified directory
@@ -34,21 +34,25 @@ export interface IReportWriter {
  */
 export class ReportWriter implements IReportWriter {
   private readonly workspaceRoot: string;
+  private readonly hideEnabled: boolean;
 
-  constructor(workspaceRoot: string) {
+  constructor(workspaceRoot: string, hideEnabled = true) {
     this.workspaceRoot = workspaceRoot;
+    this.hideEnabled = hideEnabled;
   }
 
   async writeJsonReport(report: MachineReport): Promise<void> {
     const filePath = path.join(this.workspaceRoot, REPORT_JSON_PATH);
     await this.ensureVerifiedDir();
     await fs.writeFile(filePath, JSON.stringify(report, null, 2), 'utf8');
+    await this.hideFolderIfEnabled();
   }
 
   async writeMdReport(markdown: string): Promise<void> {
     const filePath = path.join(this.workspaceRoot, REPORT_MD_PATH);
     await this.ensureVerifiedDir();
     await fs.writeFile(filePath, markdown, 'utf8');
+    await this.hideFolderIfEnabled();
   }
 
   async reportsExist(): Promise<boolean> {
@@ -68,5 +72,10 @@ export class ReportWriter implements IReportWriter {
     } catch {
       // Ignore if already exists
     }
+  }
+
+  private async hideFolderIfEnabled(): Promise<void> {
+    const verifiedPath = path.join(this.workspaceRoot, '.verified');
+    await hideVerifiedFolder(verifiedPath, this.workspaceRoot, this.hideEnabled);
   }
 }

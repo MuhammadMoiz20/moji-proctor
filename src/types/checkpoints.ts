@@ -6,6 +6,16 @@
  */
 
 /**
+ * Large file that was skipped during checkpoint creation
+ */
+export interface SkippedLargeFile {
+  /** Path relative to git root */
+  path: string;
+  /** File size in bytes */
+  size: number;
+}
+
+/**
  * Checkpoint manifest
  *
  * Written to .verified/checkpoints/checkpoint-<id>.json
@@ -21,6 +31,8 @@ export interface CheckpointManifest {
   files: FileEntry[];
   /** Session ID that created this checkpoint */
   session_id: string;
+  /** Files that were skipped due to exceeding size limit (>2MB) */
+  skipped_large_files?: SkippedLargeFile[];
 }
 
 /**

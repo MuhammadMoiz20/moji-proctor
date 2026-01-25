@@ -7,13 +7,16 @@
  * 3. Verifies hash chain matches extension canonicalization
  * 4. Posts a Check Run summary
  * 5. Uploads .verified/ as artifact
- * 6. Optionally posts PR comment with report.md
+ * 6. Writes to remote DB if validation passed (Action-only, no extension writes)
+ * 7. Optionally posts PR comment with report.md
  */
 
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { existsSync } from 'fs';
 import { Validator } from './validator.js';
+import { buildRecord, writeRecord, loadDbConfig } from './db.js';
+import type { GitHubContext } from './types.js';
 
 interface Context {
   repo: { owner: string; repo: string };
@@ -232,14 +235,77 @@ async function run(): Promise<void> {
     core.setOutput('status', integrityPassed ? 'passed' : 'failed');
     core.setOutput('integrity_passed', integrityPassed.toString());
 
-    // Post check run
+    // Upload artifact (needed for DB record)
+    const artifactUrl = await uploadArtifact(verifiedPath);
+    if (artifactUrl) {
+      core.setOutput('report-url', artifactUrl);
+    }
+
+    // DB write (Action-only, only after validation passes) - must be done before check run
+    let dbWriteStatus = '';
+    let dbWriteSuccess = true;
+
+    if (integrityPassed) {
+      const dbConfig = loadDbConfig();
+      if (dbConfig.mode !== 'disabled') {
+        core.info(`Writing to remote DB (mode: ${dbConfig.mode})...`);
+
+        const data = validator.getData();
+        if (data.report) {
+          const ghContext: GitHubContext = {
+            repo: { owner, repo },
+            sha: actualSha,
+            prNumber: actualPrNumber || null,
+            baseBranch: github.context.ref?.replace('refs/heads/', '') || null,
+            actor: github.context.actor || 'unknown',
+            workflowRunUrl: `${github.context.serverUrl}/${owner}/${repo}/actions/runs/${github.context.runId}`,
+          };
+
+          const record = buildRecord(
+            data.report,
+            ghContext,
+            validator.getLastLogHash(),
+            artifactUrl,
+            hashResult.valid
+          );
+
+          const dbWriteResult = await writeRecord(record, dbConfig);
+
+          if (dbWriteResult.success) {
+            core.info(`✅ DB write successful: record ID = ${dbWriteResult.recordId}`);
+            core.setOutput('db-record-id', dbWriteResult.recordId || '');
+            dbWriteStatus = `\n## Database Write\n\n✅ DB write: success (record ID: \`${dbWriteResult.recordId}\`)\n`;
+          } else {
+            dbWriteSuccess = false;
+            const warning = `DB write failed: ${dbWriteResult.error}`;
+            core.warning(warning);
+            core.setOutput('db-write-error', dbWriteResult.error || '');
+            dbWriteStatus = `\n## Database Write\n\n❌ DB write: failed - ${dbWriteResult.error}\n`;
+
+            if (dbConfig.strictMode) {
+              core.setFailed(warning);
+              return;
+            }
+          }
+        }
+      } else {
+        dbWriteStatus = `\n## Database Write\n\nℹ️ DB write disabled\n`;
+      }
+    } else {
+      dbWriteStatus = `\n## Database Write\n\n⏭️ Skipped due to validation failure\n`;
+    }
+
+    // Append DB write status to summary before creating check run
+    const summaryWithDbStatus = checkSummary.summary + dbWriteStatus;
+
+    // Post check run (now includes DB write status)
     await createCheckRun(
       owner,
       repo,
       token,
       actualSha,
       checkSummary.title,
-      checkSummary.summary,
+      summaryWithDbStatus,
       checkSummary.conclusions
     );
 
@@ -250,14 +316,8 @@ async function run(): Promise<void> {
         await postPrComment(owner, repo, actualPrNumber, token, data.reportMd);
       } else {
         // Use the generated summary if report.md is not available
-        await postPrComment(owner, repo, actualPrNumber, token, checkSummary.summary);
+        await postPrComment(owner, repo, actualPrNumber, token, summaryWithDbStatus);
       }
-    }
-
-    // Upload artifact
-    const artifactUrl = await uploadArtifact(verifiedPath);
-    if (artifactUrl) {
-      core.setOutput('report-url', artifactUrl);
     }
 
     // Fail if integrity checks failed and fail-on-integrity-issues is true

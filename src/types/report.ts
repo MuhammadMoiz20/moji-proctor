@@ -116,4 +116,6 @@ export interface AssignmentMetadata {
   created_at: string;
   /** Optional: expected file patterns for the assignment */
   expected_files?: string[];
+  /** Optional: whether to hide .verified folder (default: true) */
+  hide_verified_folder?: boolean;
 }

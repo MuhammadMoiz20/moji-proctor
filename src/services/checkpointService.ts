@@ -12,19 +12,29 @@ import * as crypto from 'crypto';
 import { IEventLog } from '../storage/eventLog';
 import { ICheckpointStore } from '../storage/checkpointStore';
 import { IgnoreMatcher } from '../utils/ignore';
-import { CheckpointManifest, FileEntry } from '../types/checkpoints';
+import { CheckpointManifest, FileEntry, SkippedLargeFile } from '../types/checkpoints';
 import { EventType, UnverifiedChangesPayload } from '../types/events';
 import { getRelativePath } from '../utils/gitRoot';
 
 /**
+ * Maximum file size to hash (2MB)
+ * Files larger than this are skipped and recorded in skipped_large_files
+ */
+const MAX_FILE_SIZE_TO_HASH = 2 * 1024 * 1024; // 2MB
+
+/**
  * Unverified change with LOC delta info
+ *
+ * Note: linesAdded and linesDeleted are populated when available from git diff --numstat,
+ * but are NOT included in the UNVERIFIED_CHANGES event payload to keep the schema minimal.
+ * These fields are primarily used for reporting and UI display.
  */
 export interface UnverifiedChange {
   path: string;
   change_type: 'added' | 'modified' | 'deleted';
-  /** Lines added (from git diff --numstat) */
+  /** Lines added (from git diff --numstat) - NOT persisted to event log */
   linesAdded?: number;
-  /** Lines deleted (from git diff --numstat) */
+  /** Lines deleted (from git diff --numstat) - NOT persisted to event log */
   linesDeleted?: number;
 }
 
@@ -36,6 +46,16 @@ export interface CheckpointOptions {
   sessionId: string;
   /** Whether to emit events (default: true) */
   emitEvents?: boolean;
+}
+
+/**
+ * Extended CHECKPOINT_CREATED payload with optional skipped large files count
+ */
+interface CheckpointCreatedPayloadExtended {
+  checkpoint_id: string;
+  file_count: number;
+  log_head_hash: string;
+  skipped_large_files_count?: number;
 }
 
 /**
@@ -62,6 +82,7 @@ export class CheckpointService implements ICheckpointService {
   private readonly checkpointStore: ICheckpointStore;
   private readonly ignoreMatcher: IgnoreMatcher;
   private readonly gitRoot: string;
+  private skippedLargeFiles: SkippedLargeFile[] = [];
 
   constructor(
     eventLog: IEventLog,
@@ -87,29 +108,50 @@ export class CheckpointService implements ICheckpointService {
   async createCheckpoint(options: CheckpointOptions): Promise<string> {
     const { sessionId, emitEvents = true } = options;
 
-    // Generate manifest of all tracked files
+    // Clear skipped files from previous run
+    this.skippedLargeFiles = [];
+
+    // Generate manifest of all tracked files (populates skippedLargeFiles)
     const files = await this.generateManifest();
 
     // Get current log head hash
     const logHeadHash = await this.eventLog.getLastHash() || '';
 
-    // Write checkpoint to storage
-    const checkpointId = await this.checkpointStore.writeCheckpoint({
+    // Prepare checkpoint data (checkpoint_id will be added by writeCheckpoint)
+    const checkpointData: Omit<CheckpointManifest, 'checkpoint_id'> = {
       created_at: new Date().toISOString(),
       log_head_hash: logHeadHash,
       files,
       session_id: sessionId,
-    });
+    };
+
+    // Include skipped large files if any
+    if (this.skippedLargeFiles.length > 0) {
+      checkpointData.skipped_large_files = [...this.skippedLargeFiles];
+    }
+
+    // Write checkpoint to storage
+    const checkpointId = await this.checkpointStore.writeCheckpoint(checkpointData);
+
+    // Clean up old checkpoints (keep last 10)
+    await this.checkpointStore.cleanupOldCheckpoints(10);
 
     // Emit CHECKPOINT_CREATED event if enabled
     if (emitEvents) {
+      const payload: CheckpointCreatedPayloadExtended = {
+        checkpoint_id: checkpointId,
+        file_count: files.length,
+        log_head_hash: logHeadHash,
+      };
+
+      // Include skipped large files count in payload
+      if (this.skippedLargeFiles.length > 0) {
+        (payload as any).skipped_large_files_count = this.skippedLargeFiles.length;
+      }
+
       await this.eventLog.appendEvent(
         'CHECKPOINT_CREATED',
-        {
-          checkpoint_id: checkpointId,
-          file_count: files.length,
-          log_head_hash: logHeadHash,
-        } as const,
+        payload as any,
         sessionId
       );
     }
@@ -351,6 +393,16 @@ export class CheckpointService implements ICheckpointService {
       } else if (entry.isFile()) {
         try {
           const stats = await fs.stat(fullPath);
+
+          // Check if file is too large to hash (>2MB)
+          if (stats.size > MAX_FILE_SIZE_TO_HASH) {
+            this.skippedLargeFiles.push({
+              path: relativePath,
+              size: stats.size,
+            });
+            continue;
+          }
+
           const content = await fs.readFile(fullPath);
 
           files.push({

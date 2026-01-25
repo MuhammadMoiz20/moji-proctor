@@ -12,6 +12,7 @@ import { IIntegrityService } from '../services/integrityService';
 import {
   MachineReport,
   IntegrityStatus,
+  IntegrityIssue,
   TimeStats,
   BurstStats,
   CheckpointInfo,
@@ -135,9 +136,21 @@ export class ReportGenerator implements IReportGenerator {
 
     // Run integrity check
     const integrityResult = await this.integrityService.checkIntegrity();
+
+    // Build integrity status - include unverified changes as integrity issues
+    const integrityIssues: IntegrityIssue[] = [...integrityResult.issues];
+
+    // If there are unverified changes, add them as integrity issues
+    if (unverifiedChanges.length > 0) {
+      integrityIssues.push({
+        type: 'missing_checkpoint',
+        description: `${unverifiedChanges.length} unverified change(s) detected between sessions. These changes were made without active telemetry tracking.`,
+      });
+    }
+
     const integrity: IntegrityStatus = {
-      passed: integrityResult.passed,
-      issues: integrityResult.issues,
+      passed: integrityIssues.length === 0,
+      issues: integrityIssues,
     };
 
     return {

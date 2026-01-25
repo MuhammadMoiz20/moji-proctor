@@ -140,7 +140,8 @@ export const assignmentSchema = {
     expected_files: {
       type: 'array',
       items: { type: 'string' }
-    }
+    },
+    hide_verified_folder: { type: 'boolean' }
   },
   additionalProperties: false
 } as const;

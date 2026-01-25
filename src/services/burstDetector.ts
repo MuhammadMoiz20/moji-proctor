@@ -333,9 +333,20 @@ export class BurstDetector implements IBurstDetector {
    * Check if a burst has occurred for the given file
    */
   private checkForBurst(filePath: string, now: number): void {
-    const window = this.fileWindows.get(filePath);
-    if (!window || window.events.length < 2) {
-      return; // Not enough data for a burst
+    let window = this.fileWindows.get(filePath);
+    if (!window) {
+      return; // No data to check
+    }
+
+    // Prune old events based on current time before checking
+    const cutoff = now - this.thresholds.windowMs;
+    window.events = window.events.filter((e) => e.timestamp >= cutoff);
+    window.windowStart = cutoff;
+
+    // Clean up empty windows
+    if (window.events.length === 0) {
+      this.fileWindows.delete(filePath);
+      return;
     }
 
     // Check cooldown
@@ -344,27 +355,33 @@ export class BurstDetector implements IBurstDetector {
       return; // Still in cooldown
     }
 
-    // Aggregate window statistics
+    // Aggregate window statistics (only count events meeting minEditSize)
     let editCount = 0;
     let charCount = 0;
-    let windowDuration = 0;
 
-    if (window.events.length > 0) {
-      const oldest = window.events[0].timestamp;
-      const newest = window.events[window.events.length - 1].timestamp;
-      windowDuration = newest - oldest;
-
-      for (const event of window.events) {
+    for (const event of window.events) {
+      // Only count events that meet minimum edit size
+      if (event.charsChanged >= this.minEditSize) {
         editCount++;
         charCount += event.charsChanged;
       }
     }
 
-    // Classify severity
-    const severity = this.classifySeverity(editCount, charCount, windowDuration);
+    // If no events meet the minimum size, don't emit a burst
+    if (editCount === 0) {
+      return;
+    }
+
+    // Classify severity using the configured window size (not actual event span)
+    // This ensures thresholds are applied consistently regardless of event distribution
+    const severity = this.classifySeverity(editCount, charCount, this.thresholds.windowMs);
 
     if (severity) {
-      this.emitBurstFlag(filePath, severity, editCount, charCount, windowDuration || this.thresholds.windowMs);
+      // Increment summary counters synchronously before async emit
+      const current = this.burstCounts.get(severity) ?? 0;
+      this.burstCounts.set(severity, current + 1);
+
+      this.emitBurstFlag(filePath, severity, editCount, charCount, this.thresholds.windowMs);
       this.lastBurstTime.set(filePath, now);
     }
   }
@@ -377,36 +394,44 @@ export class BurstDetector implements IBurstDetector {
     charCount: number,
     windowDuration: number
   ): BurstSeverity | null {
-    // Scale thresholds based on actual window duration vs configured window
-    const durationFactor = this.thresholds.windowMs / Math.max(windowDuration, 1);
-    const scaledEditThreshold = (threshold: number) => Math.ceil(threshold * durationFactor);
-    const scaledCharThreshold = (threshold: number) => Math.ceil(threshold * durationFactor);
+    // Scale thresholds based on actual window duration vs configured window.
+    // The key insight: scale thresholds based on how much shorter/longer the window is.
+    // Shorter window -> lower thresholds (higher rate, easier to reach high severity)
+    // Longer window -> lower thresholds (lower rate, easier to reach low severity)
 
-    // Check high severity first
-    if (
-      editCount >= scaledEditThreshold(this.thresholds.highEditThreshold) &&
-      charCount >= scaledCharThreshold(this.thresholds.highCharThreshold)
-    ) {
-      return 'high';
+    const durationRatio = Math.max(windowDuration, 1) / this.thresholds.windowMs;
+
+    if (durationRatio > 1) {
+      // Longer window: scale thresholds DOWN by inverse ratio
+      const inverseRatio = this.thresholds.windowMs / windowDuration;
+      const scaledLow = Math.ceil(this.thresholds.lowEditThreshold * inverseRatio);
+      const scaledMedium = Math.ceil(this.thresholds.mediumEditThreshold * inverseRatio);
+      const scaledHigh = Math.ceil(this.thresholds.highEditThreshold * inverseRatio);
+      const scaledLowChars = Math.ceil(this.thresholds.lowCharThreshold * inverseRatio);
+      const scaledMediumChars = Math.ceil(this.thresholds.mediumCharThreshold * inverseRatio);
+      const scaledHighChars = Math.ceil(this.thresholds.highCharThreshold * inverseRatio);
+
+      // Check low->high (find LOWEST matching for lower rate)
+      if (editCount >= scaledLow && charCount >= scaledLowChars) return 'low';
+      if (editCount >= scaledMedium && charCount >= scaledMediumChars) return 'medium';
+      if (editCount >= scaledHigh && charCount >= scaledHighChars) return 'high';
+      return null;
+    } else {
+      // Shorter/normal window: scale thresholds DOWN by duration ratio
+      // Use floor for low threshold to prevent collision with medium
+      const scaledLow = Math.floor(this.thresholds.lowEditThreshold * durationRatio);
+      const scaledMedium = Math.ceil(this.thresholds.mediumEditThreshold * durationRatio);
+      const scaledHigh = Math.ceil(this.thresholds.highEditThreshold * durationRatio);
+      const scaledLowChars = Math.ceil(this.thresholds.lowCharThreshold * durationRatio);
+      const scaledMediumChars = Math.ceil(this.thresholds.mediumCharThreshold * durationRatio);
+      const scaledHighChars = Math.ceil(this.thresholds.highCharThreshold * durationRatio);
+
+      // Check high->low (find HIGHEST matching for higher/normal rate)
+      if (editCount >= scaledHigh && charCount >= scaledHighChars) return 'high';
+      if (editCount >= scaledMedium && charCount >= scaledMediumChars) return 'medium';
+      if (editCount >= scaledLow && charCount >= scaledLowChars) return 'low';
+      return null;
     }
-
-    // Check medium severity
-    if (
-      editCount >= scaledEditThreshold(this.thresholds.mediumEditThreshold) &&
-      charCount >= scaledCharThreshold(this.thresholds.mediumCharThreshold)
-    ) {
-      return 'medium';
-    }
-
-    // Check low severity
-    if (
-      editCount >= scaledEditThreshold(this.thresholds.lowEditThreshold) &&
-      charCount >= scaledCharThreshold(this.thresholds.lowCharThreshold)
-    ) {
-      return 'low';
-    }
-
-    return null;
   }
 
   /**
@@ -433,12 +458,9 @@ export class BurstDetector implements IBurstDetector {
 
     try {
       await this.eventLog.appendEvent('BURST_FLAG', payload, this.sessionId);
-
-      // Update statistics
-      const current = this.burstCounts.get(severity) ?? 0;
-      this.burstCounts.set(severity, current + 1);
     } catch (error) {
       // Log error but don't crash - best-effort tracking
+      // Note: summary counters already incremented in checkForBurst
       console.error('Failed to emit BURST_FLAG event:', error);
     }
   }

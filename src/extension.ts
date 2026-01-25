@@ -151,6 +151,9 @@ async function initializeExtension(): Promise<void> {
     return;
   }
 
+  // Get hide folder setting from assignment config (default: true)
+  const hideVerifiedFolder = assignment.hide_verified_folder !== false;
+
   // Create status bar item
   if (!statusBarItem) {
     statusBarItem = vscode.window.createStatusBarItem(
@@ -164,7 +167,7 @@ async function initializeExtension(): Promise<void> {
   // Initialize services
   eventLog = new EventLog(gitRoot);
   checkpointStore = new CheckpointStore(gitRoot);
-  reportWriter = new ReportWriter(gitRoot);
+  reportWriter = new ReportWriter(gitRoot, hideVerifiedFolder);
   ignoreMatcher = createDefaultMatcher();
   timeTracker = new TimeTracker(eventLog);
   burstDetector = new BurstDetector(eventLog);

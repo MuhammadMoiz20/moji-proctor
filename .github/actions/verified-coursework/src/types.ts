@@ -109,6 +109,7 @@ export interface AssignmentMetadata {
   assignment_name: string;
   created_at: string;
   expected_files?: string[];
+  hide_verified_folder?: boolean;
 }
 
 /**
@@ -148,4 +149,25 @@ export interface VerifiedData {
   log: EventEnvelope[] | null;
   assignment: AssignmentMetadata | null;
   reportMd: string | null;
+}
+
+/**
+ * GitHub context for DB operations
+ */
+export interface GitHubContext {
+  repo: { owner: string; repo: string };
+  sha: string;
+  prNumber: number | null;
+  baseBranch: string | null;
+  actor: string;
+  workflowRunUrl: string;
+}
+
+/**
+ * DB write result
+ */
+export interface DbWriteResult {
+  success: boolean;
+  recordId: string | null;
+  error: string | null;
 }

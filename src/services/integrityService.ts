@@ -3,11 +3,10 @@
  *
  * Verifies hash chain and detects missing logs/checkpoints.
  * Emits INTEGRITY_COMPROMISED events when issues are found.
- *
- * TO BE IMPLEMENTED by another agent.
- * This is a stub placeholder only.
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
 import { IEventLog } from '../storage/eventLog';
 import { ICheckpointStore } from '../storage/checkpointStore';
 
@@ -29,6 +28,18 @@ export interface IntegrityResult {
 }
 
 /**
+ * Assignment.json schema
+ */
+export interface AssignmentConfig {
+  course_id: string;
+  assignment_id: string;
+  ignore?: string[];
+  idle_seconds?: number;
+  submission_mode?: string;
+  burst_thresholds?: Record<string, unknown>;
+}
+
+/**
  * Integrity service interface
  */
 export interface IIntegrityService {
@@ -39,7 +50,7 @@ export interface IIntegrityService {
 }
 
 /**
- * Integrity service stub implementation
+ * Integrity service implementation
  */
 export class IntegrityService implements IIntegrityService {
   private readonly eventLog: IEventLog;
@@ -53,7 +64,6 @@ export class IntegrityService implements IIntegrityService {
   }
 
   async checkIntegrity(): Promise<IntegrityResult> {
-    // STUB: To be implemented
     const chainResult = await this.eventLog.verifyChain();
     return {
       passed: chainResult.valid,
@@ -65,7 +75,62 @@ export class IntegrityService implements IIntegrityService {
   }
 
   async hasValidAssignment(): Promise<boolean> {
-    // STUB: To be implemented - check .verified/assignment.json
-    return false;
+    const assignmentPath = path.join(this.workspaceRoot, '.verified', 'assignment.json');
+
+    try {
+      // Check if file exists
+      await fs.promises.access(assignmentPath, fs.constants.F_OK);
+    } catch {
+      // File doesn't exist
+      return false;
+    }
+
+    try {
+      // Read and parse file
+      const content = await fs.promises.readFile(assignmentPath, 'utf-8');
+      const data = JSON.parse(content) as unknown;
+
+      // Validate required keys exist and are strings
+      if (
+        typeof data !== 'object' ||
+        data === null ||
+        !('course_id' in data) ||
+        typeof (data as { course_id: unknown }).course_id !== 'string' ||
+        !('assignment_id' in data) ||
+        typeof (data as { assignment_id: unknown }).assignment_id !== 'string'
+      ) {
+        return false;
+      }
+
+      // Optional key type validation (ignore, idle_seconds, submission_mode, burst_thresholds)
+      const config = data as AssignmentConfig;
+
+      if (config.ignore !== undefined) {
+        if (!Array.isArray(config.ignore)) {
+          return false;
+        }
+        // Check all elements are strings
+        if (!config.ignore.every((item) => typeof item === 'string')) {
+          return false;
+        }
+      }
+
+      if (config.idle_seconds !== undefined && typeof config.idle_seconds !== 'number') {
+        return false;
+      }
+
+      if (config.submission_mode !== undefined && typeof config.submission_mode !== 'string') {
+        return false;
+      }
+
+      if (config.burst_thresholds !== undefined && (typeof config.burst_thresholds !== 'object' || config.burst_thresholds === null)) {
+        return false;
+      }
+
+      return true;
+    } catch {
+      // JSON parse error or other error
+      return false;
+    }
   }
 }

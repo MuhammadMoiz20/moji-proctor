@@ -15,7 +15,7 @@ Every event line MUST include:
 - type: string
 - payload: object
 - prev_hash: string | null
-- hash: string (sha256)
+- hash: string (sha256)5
 
 Hash rule:
 hash = sha256( canonicalJson({event_id, ts, session_id, type, payload, prev_hash}) )

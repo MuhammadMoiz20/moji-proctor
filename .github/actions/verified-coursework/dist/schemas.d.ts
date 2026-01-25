@@ -212,6 +212,9 @@ export declare const assignmentSchema: {
                 readonly type: "string";
             };
         };
+        readonly hide_verified_folder: {
+            readonly type: "boolean";
+        };
     };
     readonly additionalProperties: false;
 };

@@ -52,4 +52,8 @@ export declare class Validator {
      * Get warnings
      */
     getWarnings(): string[];
+    /**
+     * Get the last log hash from the event chain
+     */
+    getLastLogHash(): string | null;
 }

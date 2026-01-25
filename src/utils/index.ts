@@ -7,3 +7,4 @@ export * from './canonicalJson';
 export * from './hash';
 export * from './ignore';
 export * from './gitRoot';
+export * from './hideVerifiedFolder';

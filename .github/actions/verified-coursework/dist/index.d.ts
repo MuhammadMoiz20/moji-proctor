@@ -7,6 +7,7 @@
  * 3. Verifies hash chain matches extension canonicalization
  * 4. Posts a Check Run summary
  * 5. Uploads .verified/ as artifact
- * 6. Optionally posts PR comment with report.md
+ * 6. Writes to remote DB if validation passed (Action-only, no extension writes)
+ * 7. Optionally posts PR comment with report.md
  */
 export {};

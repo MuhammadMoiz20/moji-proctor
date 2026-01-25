@@ -284,15 +284,19 @@ export class Validator {
    */
   generateSummary(): CheckRunSummary {
     const hashResult = this.verifyHashChain();
-    const integrityPassed = hashResult.valid && this.data.report?.integrity.passed;
+    const hasUnverifiedChanges = this.data.report
+      ? this.data.report.unverified_changes.length > 0
+      : false;
+    const reportIntegrityPassed = this.data.report?.integrity.passed ?? false;
+    const integrityPassed = hashResult.valid && reportIntegrityPassed;
 
     let summary = '# Verified Coursework Report\n\n';
 
     // Overall status
     summary += `## Status\n\n`;
-    summary += integrityPassed
-      ? '✅ **Integrity Check Passed**\n\n'
-      : '❌ **Integrity Check Failed**\n\n';
+    summary += `**Hash Chain**: ${hashResult.valid ? '✅ OK' : '❌ FAIL'}\n`;
+    summary += `**Unverified Changes**: ${hasUnverifiedChanges ? '⚠️ YES' : '✅ NO'}\n`;
+    summary += `**Overall Integrity**: ${integrityPassed ? '✅ OK' : '⚠️ FLAGGED'}\n\n`;
 
     // Hash chain status
     summary += `## Hash Chain Verification\n\n`;
@@ -404,5 +408,16 @@ export class Validator {
    */
   getWarnings(): string[] {
     return this.warnings;
+  }
+
+  /**
+   * Get the last log hash from the event chain
+   */
+  getLastLogHash(): string | null {
+    if (!this.data.log || !Array.isArray(this.data.log) || this.data.log.length === 0) {
+      return null;
+    }
+    const events = this.data.log as EventEnvelope[];
+    return events[events.length - 1].hash;
   }
 }

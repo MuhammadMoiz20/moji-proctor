@@ -17,7 +17,7 @@
 ```
 moji-proctor/
 ├── package.json                    # VS Code extension manifest
-├── tsconfig.json                   # TypeScript configuration
+├── tsconfig5.json                   # TypeScript configuration
 ├── .vscodeignore                   # Package exclusion rules
 ├── .gitignore                      # Git ignore patterns
 ├── src/
