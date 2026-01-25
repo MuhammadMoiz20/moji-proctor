@@ -1,0 +1,32 @@
+name: 'Verified Coursework Validator'
+description: 'Validates and publishes Verified Coursework reports for student assignments'
+inputs:
+  verified-path:
+    description: 'Path to .verified directory'
+    required: false
+    default: '.verified'
+  fail-on-integrity-issues:
+    description: 'Whether to fail the workflow on integrity issues'
+    required: false
+    default: 'true'
+  post-pr-comment:
+    description: 'Whether to post report as PR comment'
+    required: false
+    default: 'true'
+  token:
+    description: 'GitHub token for API calls'
+    required: true
+    default: ${{ github.token }}
+outputs:
+  validation-status:
+    description: 'Validation result (passed/failed)'
+    value: ${{ steps.validate.outputs.status }}
+  integrity-passed:
+    description: 'Whether integrity checks passed'
+    value: ${{ steps.validate.outputs.integrity_passed }}
+  report-url:
+    description: 'URL to the uploaded artifact'
+    value: ${{ steps.upload.outputs.artifact_url }}
+runs:
+  using: 'node20'
+  main: 'dist/index.js'

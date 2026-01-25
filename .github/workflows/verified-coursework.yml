@@ -1,0 +1,92 @@
+name: Verified Coursework Validation
+
+on:
+  # Trigger on push to main branches
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - '.verified/**'
+      - '!.verified/*.md'
+
+  # Trigger on pull requests
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.verified/**'
+
+  # Allow manual workflow dispatch
+  workflow_dispatch:
+    inputs:
+      fail-on-integrity-issues:
+        description: 'Fail workflow on integrity issues'
+        required: false
+        type: boolean
+        default: true
+      post-pr-comment:
+        description: 'Post report as PR comment'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  validate:
+    name: Validate Verified Coursework
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Fetch full history for proper verification
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Verify .verified directory exists
+        id: verify-exists
+        run: |
+          if [ -d ".verified" ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Found .verified directory"
+            ls -la .verified
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "No .verified directory found"
+          fi
+
+      - name: Run Verified Coursework Validator
+        if: steps.verify-exists.outputs.exists == 'true'
+        uses: ./.github/actions/verified-coursework
+        with:
+          verified-path: '.verified'
+          fail-on-integrity-issues: ${{ github.event.inputs.fail-on-integrity-issues || 'true' }}
+          post-pr-comment: ${{ github.event.inputs.post-pr-comment || 'true' }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload verification artifacts
+        if: steps.verify-exists.outputs.exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-coursework-report
+          path: .verified/
+          retention-days: 90
+          if-no-files-found: ignore
+
+      - name: Validation summary
+        if: steps.verify-exists.outputs.exists == 'true'
+        run: |
+          echo "## Verified Coursework Validation" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Status: ${{ steps.validate.outputs.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "Integrity: ${{ steps.validate.outputs.integrity_passed }}" >> $GITHUB_STEP_SUMMARY

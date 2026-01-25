@@ -1,0 +1,11 @@
+.vscode/**
+.vscode-test/**
+src/**
+.gitignore
+.verified-dev/**
+.eslintrc.json
+**/*.ts
+**/*.map
+.git/**
+*.json
+!package.json

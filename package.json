@@ -1,0 +1,55 @@
+{
+  "name": "moji-proctor",
+  "displayName": "Moji Proctor",
+  "description": "Verified coursework tracking and tamper-evident artifact generation",
+  "version": "0.0.1",
+  "publisher": "moji-proctor",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "mojiProctor.generateReport",
+        "title": "Moji Proctor: Generate Report"
+      },
+      {
+        "command": "mojiProctor.showSummary",
+        "title": "Moji Proctor: Show Summary"
+      },
+      {
+        "command": "mojiProctor.showStatus",
+        "title": "Moji Proctor: Show Status"
+      },
+      {
+        "command": "mojiProctor.endSession",
+        "title": "Moji Proctor: End Session"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.80.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.45.0",
+    "typescript": "^5.1.0",
+    "vitest": "^1.0.0"
+  }
+}
