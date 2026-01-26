@@ -274,13 +274,25 @@ async function run(): Promise<void> {
           if (dbWriteResult.success) {
             core.info(`✅ DB write successful: record ID = ${dbWriteResult.recordId}`);
             core.setOutput('db-record-id', dbWriteResult.recordId || '');
-            dbWriteStatus = `\n## Database Write\n\n✅ DB write: success (record ID: \`${dbWriteResult.recordId}\`)\n`;
+
+            // Mode-specific success message
+            const modeLabel = dbConfig.mode === 'firebase'
+              ? `firebase success (doc: \`${dbWriteResult.recordId}\`)`
+              : `success (record ID: \`${dbWriteResult.recordId}\`)`;
+
+            dbWriteStatus = `\n## Database Write\n\n✅ DB write: ${modeLabel}\n`;
           } else {
             dbWriteSuccess = false;
             const warning = `DB write failed: ${dbWriteResult.error}`;
             core.warning(warning);
             core.setOutput('db-write-error', dbWriteResult.error || '');
-            dbWriteStatus = `\n## Database Write\n\n❌ DB write: failed - ${dbWriteResult.error}\n`;
+
+            // Mode-specific error message
+            const errorPrefix = dbConfig.mode === 'firebase'
+              ? `firebase failed`
+              : `failed`;
+
+            dbWriteStatus = `\n## Database Write\n\n❌ DB write: ${errorPrefix} - ${dbWriteResult.error}\n`;
 
             if (dbConfig.strictMode) {
               core.setFailed(warning);

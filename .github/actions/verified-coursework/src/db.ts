@@ -1,13 +1,14 @@
 /**
  * Database adapter for Verified Coursework GitHub Action
  *
- * Writes validated submission records to remote DB (Supabase or webhook).
+ * Writes validated submission records to remote DB (Supabase, Firebase, or webhook).
  * Only writes AFTER all validations pass.
  *
  * This is Action-only - the extension never writes to remote DB.
  */
 
 import type { MachineReport } from './types.js';
+import { writeRecordFirebase, loadFirebaseConfig } from './firebase.js';
 
 /**
  * GitHub context for DB record
@@ -61,7 +62,7 @@ export interface DbWriteResult {
  * Configuration for DB operations
  */
 export interface DbConfig {
-  mode: 'supabase' | 'webhook' | 'disabled';
+  mode: 'supabase' | 'firebase' | 'webhook' | 'disabled';
   supabaseUrl?: string;
   supabaseKey?: string;
   supabaseTable?: string;
@@ -246,6 +247,18 @@ export async function writeRecord(
 
   if (config.mode === 'supabase') {
     return writeRecordSupabase(record, config);
+  }
+
+  if (config.mode === 'firebase') {
+    const firebaseConfig = loadFirebaseConfig();
+    if (!firebaseConfig) {
+      return {
+        success: false,
+        recordId: null,
+        error: 'Missing Firebase configuration (FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, or FIREBASE_PRIVATE_KEY)',
+      };
+    }
+    return writeRecordFirebase(record, firebaseConfig);
   }
 
   if (config.mode === 'webhook') {

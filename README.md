@@ -106,7 +106,80 @@ The GitHub Action can optionally write validated submission records to a remote 
 
 **Important**: The extension does NOT write to the remote DB. Only the GitHub Action writes after validation succeeds.
 
-#### Supabase (Recommended)
+#### Firebase Firestore (Recommended)
+
+Firebase Firestore provides a managed NoSQL database with generous free tier and simple REST API access.
+
+1. **Create a Firebase project:**
+   - Go to https://console.firebase.google.com/
+   - Create a new project or select an existing one
+
+2. **Create a Firestore database:**
+   - Navigate to Firestore Database
+   - Click "Create database"
+   - Choose your preferred location (pick one close to your users)
+   - Start in **Test mode** or **Production mode** (either works)
+   - No need to manually create a collection — it will be created automatically
+
+3. **Create a Service Account:**
+   - Go to Project Settings → Service accounts
+   - Click "Generate new private key"
+   - This downloads a JSON file containing your service account credentials
+
+4. **Extract credentials from the service account JSON:**
+   ```json
+   {
+     "project_id": "your-project-id",
+     "client_email": "firebase-adminsdk@your-project-id.iam.gserviceaccount.com",
+     "private_key": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+   }
+   ```
+
+5. **Add secrets to your GitHub repository:**
+   - `VERIFIED_DB_MODE=firebase`
+   - `FIREBASE_PROJECT_ID=your-project-id`
+   - `FIREBASE_CLIENT_EMAIL=firebase-adminsdk@your-project-id.iam.gserviceaccount.com`
+   - `FIREBASE_PRIVATE_KEY=-----BEGIN PRIVATE KEY---\n...\n-----END PRIVATE KEY-----`
+     - **Important**: Preserve the literal `\n` characters in the private key when adding as a secret
+   - `FIREBASE_COLLECTION=verified_reports` (optional, defaults to `verified_reports`)
+
+6. **Grant minimal permissions:**
+   - The service account only needs "Cloud Datastore User" role
+   - This allows read/write access to Firestore
+   - Avoid granting broader roles like "Editor" or "Owner"
+
+7. **Document shape:**
+   Records are stored as flat Firestore documents with the following fields:
+   - `repo` (string): Repository in "owner/repo" format
+   - `pr_number` (integer | null): Pull request number
+   - `commit_sha` (string): Git commit SHA
+   - `course_id` (string): Course identifier
+   - `assignment_id` (string): Assignment identifier
+   - `generated_at` (string): ISO 8601 timestamp
+   - `focused_ms` (integer): Focused time in milliseconds
+   - `active_ms` (integer): Active time in milliseconds
+   - `sessions_count` (integer): Number of work sessions
+   - `bursts_low/medium/high/total` (integer): Burst detection counts
+   - `unverified` (boolean): Whether unverified changes exist
+   - `unverified_count` (integer): Count of unverified changes
+   - `integrity_compromised` (boolean): Whether integrity checks passed
+   - `hash_chain_ok` (boolean): Whether hash chain is valid
+   - `continuity_ok` (boolean): Whether event continuity is valid
+   - `last_log_hash` (string | null): Last event hash in chain
+   - `workflow_run_url` (string): Link to GitHub workflow run
+   - `artifact_url` (string | null): Link to uploaded artifact
+   - `updated_at` (string): ISO 8601 timestamp of last write
+
+8. **Idempotency:**
+   Documents are identified by a deterministic document ID:
+   ```
+   {repo}__pr{pr_number}__{commit_sha}
+   ```
+   Example: `owner__repo__pr123__abc123def`
+   - Re-runs of the same workflow will overwrite the document
+   - No duplicate records are created
+
+#### Supabase
 
 1. Create a Supabase project and table with this schema:
 

@@ -1,7 +1,7 @@
 /**
  * Database adapter for Verified Coursework GitHub Action
  *
- * Writes validated submission records to remote DB (Supabase or webhook).
+ * Writes validated submission records to remote DB (Supabase, Firebase, or webhook).
  * Only writes AFTER all validations pass.
  *
  * This is Action-only - the extension never writes to remote DB.
@@ -59,7 +59,7 @@ export interface DbWriteResult {
  * Configuration for DB operations
  */
 export interface DbConfig {
-    mode: 'supabase' | 'webhook' | 'disabled';
+    mode: 'supabase' | 'firebase' | 'webhook' | 'disabled';
     supabaseUrl?: string;
     supabaseKey?: string;
     supabaseTable?: string;
