@@ -1,0 +1,30 @@
+{
+  "schema_version": "0.1.0",
+  "generated_at": "2026-01-26T00:00:00Z",
+  "assignment_id": "homework-1",
+  "session_id": "00000000-0000-0000-0000-000000000000",
+  "integrity": {
+    "passed": true,
+    "issues": []
+  },
+  "time": {
+    "total_focused_seconds": 0,
+    "total_active_seconds": 0,
+    "session_count": 0,
+    "first_session_start": null,
+    "last_session_end": null
+  },
+  "bursts": {
+    "total_count": 0,
+    "by_severity": {
+      "low": 0,
+      "medium": 0,
+      "high": 0
+    }
+  },
+  "checkpoints": {
+    "count": 0,
+    "latest_checkpoint_id": null
+  },
+  "unverified_changes": []
+}

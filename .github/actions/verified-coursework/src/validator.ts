@@ -8,6 +8,7 @@
  */
 
 import Ajv from 'ajv';
+import addFormats from 'ajv-formats';
 import { readFileSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { canonicalStringify, sha256, formatSeconds, formatDate } from './utils.js';
@@ -27,6 +28,7 @@ import {
 } from './schemas.js';
 
 const ajv = new Ajv({ allErrors: true });
+addFormats(ajv);
 
 /**
  * Main validator class
