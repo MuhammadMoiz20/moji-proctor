@@ -19,6 +19,8 @@ coverage/
 .nyc_output/
 package-lock.json
 .verified-dev/
+CLAUDE.md
+PROJECT_REPORT.md
 
 # For local development only (DO NOT ignore .verified/ as it must be committed for PR submission)
 # .verified/ is intentionally NOT ignored as it must be committed for PR submission
