@@ -1,0 +1,275 @@
+/**
+ * Event Routes
+ *
+ * Handles signal ingestion from extensions with signature verification.
+ * Devices are bound to authenticated users for security.
+ */
+import { z } from 'zod';
+import { prisma } from '../index';
+import { verifySignature, getNextSequenceNumber, incrementSequenceNumber } from '../services/signatures';
+import { detectTampering, } from '../services/tamperDetection';
+import { sessionStartPayloadSchema, sessionEndPayloadSchema, burstFlagPayloadSchema, checkpointCreatedPayloadSchema, unverifiedChangesPayloadSchema, integrityCompromisedPayloadSchema, statusUpdatePayloadSchema, } from '../schemas/signals';
+// Validation schemas per signal type
+const payloadSchemas = {
+    SESSION_START: sessionStartPayloadSchema,
+    SESSION_END: sessionEndPayloadSchema,
+    BURST_FLAG: burstFlagPayloadSchema,
+    CHECKPOINT_CREATED: checkpointCreatedPayloadSchema,
+    UNVERIFIED_CHANGES: unverifiedChangesPayloadSchema,
+    INTEGRITY_COMPROMISED: integrityCompromisedPayloadSchema,
+    STATUS_UPDATE: statusUpdatePayloadSchema,
+};
+// Base validation schema
+const batchUploadSchema = z.object({
+    signals: z.array(z.object({
+        event_id: z.string().uuid(),
+        ts: z.string().datetime(),
+        session_id: z.string().uuid(),
+        type: z.enum(['SESSION_START', 'SESSION_END', 'BURST_FLAG', 'CHECKPOINT_CREATED', 'UNVERIFIED_CHANGES', 'INTEGRITY_COMPROMISED', 'STATUS_UPDATE']),
+        payload: z.unknown(), // Will be validated per type
+        assignment_id: z.string().min(1).max(255),
+        course_id: z.string().max(255).optional(),
+        commit_sha: z.string().max(64).optional(),
+        repo_identifier: z.string().max(255).optional(),
+        device_pubkey: z.string().regex(/^[0-9a-f]{64}$/),
+        seq: z.number().int().positive().max(1_000_000), // Reasonable max
+        sig: z.string().regex(/^[0-9a-f]{128}$/),
+    })).min(1).max(100), // Max 100 signals per batch
+});
+/**
+ * Register event routes
+ */
+export async function eventRoutes(fastify) {
+    /**
+     * POST /events/batch
+     *
+     * Upload a batch of signals
+     */
+    fastify.post('/events/batch', async (request, reply) => {
+        // Verify JWT
+        try {
+            const authHeader = request.headers.authorization;
+            fastify.log.info({ authHeader: authHeader ? `${authHeader.substring(0, 30)}...` : 'none' }, 'Verifying JWT');
+            await request.jwtVerify();
+        }
+        catch (error) {
+            const err = error;
+            fastify.log.error({
+                errorName: err.name,
+                errorMessage: err.message,
+                errorCode: err.code,
+                stack: err.stack?.split('\n').slice(0, 3).join('\n')
+            }, 'JWT verification failed');
+            return reply.status(401).send({ error: 'Unauthorized', details: err.message });
+        }
+        const userId = request.user?.userId;
+        if (!userId) {
+            fastify.log.error('No userId in JWT');
+            return reply.status(401).send({ error: 'Unauthorized' });
+        }
+        fastify.log.info({ userId, signalCount: request.body?.signals?.length }, 'Batch upload request received');
+        const body = batchUploadSchema.safeParse(request.body);
+        if (!body.success) {
+            fastify.log.error({ error: body.error }, 'Batch validation failed');
+            return reply.status(400).send({ error: 'Validation failed', details: body.error });
+        }
+        const { signals } = body.data;
+        // Process each signal
+        const accepted = [];
+        const rejected = [];
+        fastify.log.info({ totalSignals: signals.length }, 'Processing signals batch');
+        for (const signal of signals) {
+            try {
+                fastify.log.info({
+                    eventId: signal.event_id,
+                    type: signal.type,
+                    assignmentId: signal.assignment_id,
+                    seq: signal.seq
+                }, 'Processing signal');
+                // 1. Validate payload based on type
+                const payloadSchema = payloadSchemas[signal.type];
+                if (!payloadSchema) {
+                    fastify.log.warn({ eventId: signal.event_id, type: signal.type }, 'Unknown signal type');
+                    rejected.push(signal.event_id);
+                    continue;
+                }
+                const validatedPayload = payloadSchema.safeParse(signal.payload);
+                if (!validatedPayload.success) {
+                    fastify.log.warn({
+                        signalId: signal.event_id,
+                        type: signal.type,
+                        error: validatedPayload.error,
+                    }, 'Payload validation failed');
+                    rejected.push(signal.event_id);
+                    continue;
+                }
+                // 2. Verify signature FIRST (before any DB operations)
+                const payloadToVerify = {
+                    event_id: signal.event_id,
+                    ts: signal.ts,
+                    session_id: signal.session_id,
+                    type: signal.type,
+                    payload: validatedPayload.data, // Use validated payload
+                    assignment_id: signal.assignment_id,
+                    course_id: signal.course_id,
+                    commit_sha: signal.commit_sha,
+                    repo_identifier: signal.repo_identifier,
+                };
+                const isValid = verifySignature(payloadToVerify, signal.sig, signal.device_pubkey);
+                if (!isValid) {
+                    rejected.push(signal.event_id);
+                    continue;
+                }
+                // 3. Get or create device AFTER signature verification
+                // Device is bound to the authenticated user
+                const device = await prisma.device.upsert({
+                    where: { publicKey: signal.device_pubkey },
+                    update: { lastSeenAt: new Date() },
+                    create: {
+                        publicKey: signal.device_pubkey,
+                        userId: userId, // Bind to authenticated user
+                    },
+                });
+                // 4. Verify device belongs to authenticated user
+                if (device.userId !== userId) {
+                    fastify.log.warn({
+                        deviceUserId: device.userId,
+                        requestUserId: userId,
+                        devicePubKey: signal.device_pubkey,
+                    }, 'Device belongs to different user');
+                    rejected.push(signal.event_id);
+                    continue;
+                }
+                // 5. Verify sequence number atomically
+                const currentSeq = await getNextSequenceNumber(device.id, signal.assignment_id);
+                if (signal.seq <= currentSeq) {
+                    // Replay or out of order
+                    rejected.push(signal.event_id);
+                    continue;
+                }
+                if (signal.seq !== currentSeq + 1) {
+                    // Gap in sequence - reject to prevent replay
+                    rejected.push(signal.event_id);
+                    continue;
+                }
+                // 6. Check for duplicate event_id
+                const existing = await prisma.signal.findUnique({
+                    where: {
+                        eventId_assignmentId: {
+                            eventId: signal.event_id,
+                            assignmentId: signal.assignment_id,
+                        },
+                    },
+                });
+                if (existing) {
+                    rejected.push(signal.event_id);
+                    continue;
+                }
+                // 7. Perform tamper detection BEFORE storing the signal
+                // Extract checkpoint_id from payload if available (for UNVERIFIED_CHANGES)
+                let checkpointId = null;
+                if (signal.type === 'UNVERIFIED_CHANGES' && validatedPayload.data) {
+                    const payload = validatedPayload.data;
+                    checkpointId = payload.last_checkpoint_id || null;
+                }
+                const tamperResult = await detectTampering(prisma, device.id, signal.assignment_id, {
+                    eventId: signal.event_id,
+                    type: signal.type,
+                    timestamp: signal.ts,
+                    seq: signal.seq,
+                    sessionId: signal.session_id,
+                    checkpointId,
+                }, validatedPayload.data);
+                // 8. Store signal with sequence update in transaction
+                await prisma.$transaction(async (tx) => {
+                    // Re-check sequence in transaction to prevent race conditions
+                    const txSeq = await getNextSequenceNumber(device.id, signal.assignment_id);
+                    if (signal.seq !== txSeq + 1) {
+                        throw new Error('Sequence number mismatch in transaction');
+                    }
+                    // Create signal record
+                    await tx.signal.create({
+                        data: {
+                            eventId: signal.event_id,
+                            deviceId: device.id,
+                            assignmentId: signal.assignment_id,
+                            courseId: signal.course_id,
+                            sessionId: signal.session_id,
+                            type: signal.type,
+                            timestamp: new Date(signal.ts),
+                            payload: validatedPayload.data, // Use validated payload
+                            seq: signal.seq,
+                            signature: signal.sig,
+                            devicePubKey: signal.device_pubkey,
+                        },
+                    });
+                    // Increment sequence
+                    await incrementSequenceNumber(tx, device.id, signal.assignment_id, signal.seq);
+                    // Update checkpoint state for tamper detection
+                    if (tamperResult.updatedState) {
+                        await tx.deviceCheckpoint.upsert({
+                            where: {
+                                deviceId_assignmentId: {
+                                    deviceId: device.id,
+                                    assignmentId: signal.assignment_id,
+                                },
+                            },
+                            update: {
+                                lastCheckpointId: tamperResult.updatedState.lastCheckpointId,
+                                stateHash: tamperResult.updatedState.stateHash,
+                                seq: tamperResult.updatedState.seq,
+                                sessionCount: tamperResult.updatedState.sessionCount,
+                                totalFocusedSeconds: tamperResult.updatedState.totalFocusedSeconds,
+                                hasDiscontinuity: tamperResult.updatedState.hasDiscontinuity,
+                            },
+                            create: {
+                                deviceId: device.id,
+                                assignmentId: signal.assignment_id,
+                                lastCheckpointId: tamperResult.updatedState.lastCheckpointId,
+                                stateHash: tamperResult.updatedState.stateHash,
+                                seq: tamperResult.updatedState.seq,
+                                sessionCount: tamperResult.updatedState.sessionCount,
+                                totalFocusedSeconds: tamperResult.updatedState.totalFocusedSeconds,
+                                hasDiscontinuity: tamperResult.updatedState.hasDiscontinuity,
+                            },
+                        });
+                    }
+                    // Create tamper flag if detected
+                    if (tamperResult.isTampered && tamperResult.tamperType && tamperResult.description) {
+                        await tx.tamperFlag.create({
+                            data: {
+                                deviceId: device.id,
+                                assignmentId: signal.assignment_id,
+                                type: tamperResult.tamperType,
+                                description: tamperResult.description,
+                                detectedAtSeq: signal.seq,
+                                signalId: signal.event_id,
+                                previousCheckpointId: tamperResult.previousCheckpointId,
+                                newCheckpointId: checkpointId,
+                            },
+                        });
+                        fastify.log.warn({
+                            deviceId: device.id,
+                            assignmentId: signal.assignment_id,
+                            signalId: signal.event_id,
+                            tamperType: tamperResult.tamperType,
+                            description: tamperResult.description,
+                        }, 'Tampering detected');
+                    }
+                });
+                accepted.push(signal.event_id);
+            }
+            catch (error) {
+                fastify.log.error({ error, signalId: signal.event_id }, 'Failed to process signal');
+                rejected.push(signal.event_id);
+            }
+        }
+        const response = {
+            accepted: accepted.length,
+            rejected: rejected.length,
+            rejected_ids: rejected.length > 0 ? rejected : undefined,
+        };
+        return reply.send(response);
+    });
+}
+//# sourceMappingURL=events.js.map

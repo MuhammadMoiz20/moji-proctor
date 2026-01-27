@@ -1,0 +1,26 @@
+{
+  "course_id": "CS101",
+  "assignment_id": "homework-1",
+  "ignore": [
+    "node_modules/**",
+    ".vscode/**",
+    "dist/**",
+    "build/**",
+    "*.log"
+  ],
+  "burst_thresholds": {
+    "low_edits_per_min": 20,
+    "medium_edits_per_min": 40,
+    "high_edits_per_min": 60,
+    "window_ms": 10000
+  },
+  "online_signals": {
+    "enabled": false,
+    "server_url": "https://your-server.com",
+    "max_batch": 50,
+    "flush_interval_ms": 60000,
+    "max_queue": 1000,
+    "top_paths_limit": 10,
+    "_comment": "All API routes use /api prefix: /api/auth/*, /api/events/batch, /api/instructor/*"
+  }
+}

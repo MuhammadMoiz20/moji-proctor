@@ -18,6 +18,8 @@
     "node_modules",
     ".vscode-test",
     "vitest.config.ts",
-    "**/*.test.ts"
+    "**/*.test.ts",
+    "server",
+    "dashboard"
   ]
 }

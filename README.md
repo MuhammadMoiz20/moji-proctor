@@ -6,9 +6,134 @@ A Verified Coursework extension for VS Code that tracks student coding activity 
 
 Moji-Proctor is a VS Code extension that monitors coding activity during assignment work, creating a cryptographically linked chain of events (edits, file operations, idle periods) that can be verified by instructors. It includes a GitHub Action for automated report verification in PR-based submission workflows.
 
-**Privacy First**: This extension has **no telemetry** and makes **no network calls**. All data is stored locally in the `.verified/` directory within your workspace.
+**Privacy First**: By default, this extension has **no telemetry** and makes **no network calls**. All data is stored locally in the `.verified/` directory within your workspace.
 
-## Quick Start
+## Online Signals Mode
+
+### Overview
+
+**Online Signals Mode** is an optional feature that securely uploads only metadata signals to a server, giving instructors real-time visibility even if students delete their local `.verified/` directory.
+
+**Key Privacy Guarantees:**
+- ✅ **NO source code** is ever transmitted
+- ✅ **NO file contents** are ever transmitted
+- ✅ **NO git diffs** are ever transmitted
+- ✅ Only metadata is uploaded: session times, burst flags, change counts
+- ✅ All uploads are signed with Ed25519 device keys (spoof-proof)
+- ✅ Local-only mode remains fully functional (backwards compatible)
+
+### Configuration
+
+Create `moji-proctor.config.json` in your workspace root:
+
+```json
+{
+  "course_id": "CS101",
+  "assignment_id": "homework-1",
+  "online_signals": {
+    "enabled": true,
+    "server_url": "https://your-server.com"
+  }
+}
+```
+
+**Full configuration options:**
+
+```json
+{
+  "course_id": "CS101",
+  "assignment_id": "homework-1",
+  "ignore": ["node_modules/**", ".vscode/**"],
+  "burst_thresholds": {
+    "low_edits_per_min": 20,
+    "medium_edits_per_min": 40,
+    "high_edits_per_min": 60,
+    "window_ms": 10000
+  },
+  "online_signals": {
+    "enabled": true,
+    "server_url": "https://your-server.com",
+    "max_batch": 50,
+    "flush_interval_ms": 60000,
+    "max_queue": 1000,
+    "top_paths_limit": 10
+  }
+}
+```
+
+### What Gets Uploaded
+
+Only the following signal types are uploaded (NO TIME_TICK):
+
+| Signal Type | What's Included | What's Excluded |
+|-------------|-----------------|------------------|
+| SESSION_START | Workspace name | Full paths |
+| SESSION_END | Total focused/active time, end reason | File contents |
+| BURST_FLAG | Severity, counts, window, file **name** only | Full file path |
+| UNVERIFIED_CHANGES | Counts of added/modified/deleted files, top N paths | File contents, diffs |
+| INTEGRITY_COMPROMISED | Reason code, description | Sensitive data |
+
+### Authentication
+
+When online signals is enabled, you'll be prompted to sign in:
+
+1. Run **"Moji Proctor: Sign In"** command
+2. A browser window opens to GitHub's device authorization page
+3. Enter the code shown in VS Code
+4. Authorization grants access to the signal upload endpoint
+
+**No passwords are stored** - the extension uses short-lived JWT access tokens (15 min) + rotating refresh tokens.
+
+### Security Model
+
+1. **Device Keypairs**: Ed25519 keypair generated on first run
+   - Private key stored in OS keychain (VS Code SecretStorage)
+   - Public key registered with server on first auth
+
+2. **Request Signing**: Every uploaded signal includes:
+   - `device_pubkey`: Device's public key (hex)
+   - `seq`: Monotonic sequence number per device+assignment
+   - `sig`: Ed25519 signature over canonical JSON payload
+
+3. **Server Verification**:
+   - Verifies signature against device public key
+   - Enforces monotonic sequence numbers (replay protection)
+   - Rejects duplicate event IDs (idempotency)
+
+4. **Transport Security**:
+   - HTTPS required in production
+   - Short-lived access tokens
+   - Rate limiting per user/device/IP
+
+### Local Development Setup
+
+The server component can be run locally for development:
+
+```bash
+cd server
+npm install
+cp .env.example .env
+# Edit .env with your GitHub OAuth credentials
+docker-compose up -d
+```
+
+This starts:
+- PostgreSQL database on port 5432
+- API server on port 3000
+- Adminer (DB admin UI) on port 8080
+
+See `server/README.md` for more server documentation.
+
+### Backwards Compatibility
+
+**Local-only mode is unchanged:**
+- If `moji-proctor.config.json` is missing → local-only mode
+- If `online_signals.enabled` is `false` → local-only mode
+- If `online_signals.enabled` is `true` → online signals mode
+
+All existing functionality continues to work exactly as before.
+
+## Quick Start (Local-Only Mode)
 
 ### Installing and Running the Extension
 
@@ -242,8 +367,8 @@ Hiding does **not** affect git — the folder remains tracked and commitable. If
 
 This tool provides **signals**, not **proofs**:
 
-- **Logs can be deleted or modified**: A determined student could tamper with local logs before submission
-- **No server-side verification**: Without a central server, students control their own data
+- **Local-only mode**: Logs can be deleted or modified before submission (mitigated by Online Signals Mode)
+- **Online Signals Mode**: Requires network connectivity and server infrastructure
 - **Rate limiting is approximate**: Burst detection uses heuristics that may have edge cases
 - **Only tracks VS Code activity**: Work done outside the tracked environment is not recorded
 

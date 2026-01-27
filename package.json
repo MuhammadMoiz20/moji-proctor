@@ -31,6 +31,22 @@
       {
         "command": "mojiProctor.endSession",
         "title": "Moji Proctor: End Session"
+      },
+      {
+        "command": "mojiProctor.signIn",
+        "title": "Moji Proctor: Sign In"
+      },
+      {
+        "command": "mojiProctor.signOut",
+        "title": "Moji Proctor: Sign Out"
+      },
+      {
+        "command": "mojiProctor.flushSignals",
+        "title": "Moji Proctor: Upload Signals Now"
+      },
+      {
+        "command": "mojiProctor.forceResume",
+        "title": "Moji Proctor: Force Resume Uploads (Debug)"
       }
     ]
   },
