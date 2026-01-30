@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { Github, Copy, Check, ShieldCheck, Activity, Zap } from 'lucide-react'
+import { apiUrl } from '../config/api'
 
 export default function LoginPage() {
   const [deviceCode, setDeviceCode] = useState<string | null>(null)
@@ -20,7 +21,7 @@ export default function LoginPage() {
 
   const startDeviceFlow = async () => {
     try {
-      const response = await fetch('/api/auth/device/start', {
+      const response = await fetch(apiUrl('/api/auth/device/start'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
@@ -47,7 +48,7 @@ export default function LoginPage() {
   const pollForAuth = async (code: string, interval: number) => {
     const poll = async () => {
       try {
-        const response = await fetch('/api/auth/device/complete', {
+        const response = await fetch(apiUrl('/api/auth/device/complete'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ device_code: code }),

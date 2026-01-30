@@ -49,9 +49,10 @@ import {
   GitRootNotFoundError,
 } from './utils/gitRoot';
 import { readAssignmentMetadata } from './utils/assignmentLoader';
-import { readConfig } from './utils/configLoader';
+import { CONFIG_FILENAME, readConfig, validateOnlineSignalsConfig } from './utils/configLoader';
 import { OnlineSignalsManager, createOnlineSignalsManager } from './services/onlineSignalsManager';
 import { EventEnvelope } from './types/events';
+import { buildStatusBarText, buildStatusBarTooltipMarkdown, StatusBarState, ExtensionMode } from './services/statusBar';
 
 /**
  * Extension context
@@ -88,6 +89,71 @@ let currentAssignment: { assignment_id: string; assignment_name: string } | null
 let statusBarItem: vscode.StatusBarItem;
 
 /**
+ * Output channel for diagnostics
+ */
+let outputChannel: vscode.OutputChannel;
+
+/**
+ * Extension status mode
+ */
+let extensionMode: ExtensionMode = 'loading';
+
+/**
+ * Current activity label for status bar
+ */
+let activityLabel = 'Loading...';
+
+/**
+ * Current config snapshot
+ */
+let currentConfig: Awaited<ReturnType<typeof readConfig>> | null = null;
+
+/**
+ * Debounced status update timer
+ */
+let statusUpdateTimer: NodeJS.Timeout | null = null;
+
+/**
+ * Event log sink registry for forwarding
+ */
+type EventSink = (event: EventEnvelope) => void | Promise<void>;
+let eventLogDispatcher: {
+  eventLog: IEventLog;
+  addSink: (sink: EventSink) => void;
+  removeSink: (sink: EventSink) => void;
+} | null = null;
+let onlineSignalsSink: EventSink | null = null;
+let statusEventSink: EventSink | null = null;
+
+/**
+ * Cached event stats for status bar
+ */
+const EVENT_STATS_TTL_MS = 30000;
+let eventStatsDirty = true;
+let eventStatsCache: {
+  dateKey: string;
+  focusedSecondsToday: number;
+  activeSecondsToday: number;
+  burstCountToday: number;
+  unverifiedCount: number;
+  unverifiedLastDetectedAt: string | null;
+  integrityCompromisedAt: string | null;
+  integrityCompromisedReason: string | null;
+  computedAt: number;
+} | null = null;
+
+/**
+ * Cached integrity snapshot
+ */
+const INTEGRITY_CACHE_TTL_MS = 60000;
+let integrityCache: {
+  passed: boolean;
+  issues: string[];
+  checkedAt: string;
+  computedAt: number;
+} | null = null;
+
+/**
  * Periodic report timer
  */
 let periodicReportTimer: NodeJS.Timeout | null = null;
@@ -102,6 +168,8 @@ const PERIODIC_REPORT_INTERVAL_MS = 60 * 1000;
  */
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   extensionContext = context;
+  outputChannel = vscode.window.createOutputChannel('Moji Proctor');
+  context.subscriptions.push(outputChannel);
 
   // Create status bar immediately so it appears right away
   statusBarItem = vscode.window.createStatusBarItem(
@@ -109,7 +177,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     100
   );
   statusBarItem.name = 'Moji Proctor Status';
-  statusBarItem.text = '$(loading~spin) Moji Proctor: Loading...';
+  statusBarItem.text = '😴 Moji Proctor: Loading...';
   statusBarItem.command = 'mojiProctor.showStatus';
   statusBarItem.tooltip = 'Moji Proctor is initializing...';
   context.subscriptions.push(statusBarItem);
@@ -149,22 +217,112 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     })
   );
 
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mojiProctor.retryUploadNow', async () => {
+      await retryUploadNowCommand();
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mojiProctor.showOnlineSignalsStatus', async () => {
+      await showOnlineSignalsStatusCommand();
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mojiProctor.signIn', async () => {
+      if (!onlineSignalsManager) {
+        vscode.window.showWarningMessage('Online Signals mode is not enabled.');
+        return;
+      }
+      await onlineSignalsManager.signIn();
+      scheduleStatusBarUpdate('sign-in');
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mojiProctor.signOut', async () => {
+      if (!onlineSignalsManager) {
+        vscode.window.showWarningMessage('Online Signals mode is not enabled.');
+        return;
+      }
+      await onlineSignalsManager.signOut();
+      scheduleStatusBarUpdate('sign-out');
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mojiProctor.forceResume', async () => {
+      if (!onlineSignalsManager) {
+        vscode.window.showWarningMessage('Online Signals mode is not enabled.');
+        return;
+      }
+      const authStatus = await onlineSignalsManager.getAuthStatus();
+      if (!authStatus.authenticated) {
+        vscode.window.showWarningMessage('Please sign in first before resuming uploads.');
+        return;
+      }
+      await onlineSignalsManager.forceResume();
+      scheduleStatusBarUpdate('force-resume');
+    })
+  );
+
+  // Internal auth event hooks
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mojiProctor.signedIn', async () => {
+      if (onlineSignalsManager) {
+        await onlineSignalsManager.handleSignedIn();
+        scheduleStatusBarUpdate('signed-in');
+      }
+    })
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('mojiProctor.signedOut', () => {
+      if (onlineSignalsManager) {
+        onlineSignalsManager.handleSignedOut();
+        scheduleStatusBarUpdate('signed-out');
+      }
+    })
+  );
+
   // Watch for workspace folder changes
   context.subscriptions.push(
     vscode.workspace.onDidChangeWorkspaceFolders(async () => {
       await initializeExtension();
     })
   );
+
+  const configWatcher = vscode.workspace.createFileSystemWatcher(`**/${CONFIG_FILENAME}`);
+  configWatcher.onDidChange(() => {
+    void handleConfigChange();
+  });
+  configWatcher.onDidCreate(() => {
+    void handleConfigChange();
+  });
+  configWatcher.onDidDelete(() => {
+    void handleConfigChange();
+  });
+  context.subscriptions.push(configWatcher);
 }
 
 /**
  * Initialize extension services for current workspace
  */
 async function initializeExtension(): Promise<void> {
+  setExtensionMode('loading', 'Loading...');
+  if (onlineSignalsManager) {
+    await onlineSignalsManager.stop();
+    onlineSignalsManager.dispose();
+    onlineSignalsManager = null;
+    if (eventLogDispatcher && onlineSignalsSink) {
+      eventLogDispatcher.removeSink(onlineSignalsSink);
+      onlineSignalsSink = null;
+    }
+  }
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
 
   if (!workspaceFolder) {
-    updateStatusBar('No workspace', 90);
+    setExtensionMode('disabled', 'No workspace');
     return;
   }
 
@@ -175,7 +333,7 @@ async function initializeExtension(): Promise<void> {
     gitRoot = findGitRoot(workspaceRoot);
   } catch (e) {
     if (e instanceof GitRootNotFoundError) {
-      updateStatusBar('Not a git repo', 90);
+      setExtensionMode('disabled', 'Not a git repo');
       return;
     }
     throw e;
@@ -183,11 +341,12 @@ async function initializeExtension(): Promise<void> {
 
   // Read config file (optional)
   const config = await readConfig(workspaceRoot);
+  currentConfig = config;
 
   // Check for assignment metadata
   const assignment = await readAssignmentMetadata(gitRoot);
   if (!assignment) {
-    updateStatusBar('No assignment', 90);
+    setExtensionMode('disabled', 'No assignment');
     return;
   }
 
@@ -201,7 +360,13 @@ async function initializeExtension(): Promise<void> {
   const hideVerifiedFolder = assignment.hide_verified_folder !== false;
 
   // Initialize services
-  eventLog = new EventLog(gitRoot);
+  const baseEventLog = new EventLog(gitRoot);
+  eventLogDispatcher = createEventLogDispatcher(baseEventLog);
+  eventLog = eventLogDispatcher.eventLog;
+  statusEventSink = handleStatusEvent;
+  eventLogDispatcher.addSink(statusEventSink);
+  eventStatsDirty = true;
+  integrityCache = null;
   checkpointStore = new CheckpointStore(gitRoot);
   reportWriter = new ReportWriter(gitRoot, hideVerifiedFolder);
   ignoreMatcher = createDefaultMatcher();
@@ -218,12 +383,19 @@ async function initializeExtension(): Promise<void> {
         onlineSignalsManager = createOnlineSignalsManager(
           extensionContext,
           workspaceRoot,
-          config.online_signals
+          config.online_signals,
+          outputChannel
         );
         await onlineSignalsManager.start();
 
-        // Wrap eventLog to forward events
-        eventLog = createForwardingEventLog(eventLog, onlineSignalsManager);
+        // Forward events to online signals manager
+        onlineSignalsSink = (event: EventEnvelope) => onlineSignalsManager?.processEvent(event);
+        eventLogDispatcher.addSink(onlineSignalsSink);
+
+        const statusDisposable = onlineSignalsManager.onDidChangeStatus(() => {
+          scheduleStatusBarUpdate('online-signals');
+        });
+        extensionContext.subscriptions.push(statusDisposable);
       } catch (error) {
         console.error('Failed to start online signals manager:', error);
         onlineSignalsManager = null;
@@ -283,9 +455,7 @@ async function initializeExtension(): Promise<void> {
   }
   burstDetector.start();
 
-  if (!onlineSignalsManager) {
-    updateStatusBar('Moji Proctor: Active', 100);
-  }
+  setExtensionMode('active', 'Active');
 
   // Start periodic report generation timer
   startPeriodicReportTimer();
@@ -296,17 +466,9 @@ async function initializeExtension(): Promise<void> {
       if (timeTracker) {
         timeTracker.onWindowStateChanged(e.focused);
         if (e.focused) {
-          if (onlineSignalsManager) {
-            updateStatusBarWithOnlineStatus('Moji Proctor: Active', onlineSignalsManager.isOnline);
-          } else {
-            updateStatusBar('Moji Proctor: Active', 100);
-          }
+          setActivityLabel('Active');
         } else {
-          if (onlineSignalsManager) {
-            updateStatusBarWithOnlineStatus('Moji Proctor: Unfocused', false);
-          } else {
-            updateStatusBar('Moji Proctor: Unfocused', 100);
-          }
+          setActivityLabel('Unfocused');
         }
       }
     })
@@ -335,6 +497,7 @@ async function initializeExtension(): Promise<void> {
       // Stop online signals manager
       if (onlineSignalsManager) {
         await onlineSignalsManager.stop();
+        onlineSignalsManager.dispose();
       }
 
       // Create checkpoint before session ends
@@ -349,26 +512,85 @@ async function initializeExtension(): Promise<void> {
 }
 
 /**
- * Create an event log forwarder that forwards events to online signals
+ * Handle config changes and refresh online signals manager
  */
-function createForwardingEventLog(originalEventLog: IEventLog, manager: OnlineSignalsManager): IEventLog {
-  // Store original appendEvent
+async function handleConfigChange(): Promise<void> {
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+  if (!workspaceFolder) {
+    return;
+  }
+
+  const workspaceRoot = workspaceFolder.uri.fsPath;
+  const newConfig = await readConfig(workspaceRoot);
+  const previousConfig = currentConfig;
+  currentConfig = newConfig;
+
+  const wasEnabled = previousConfig?.online_signals?.enabled ?? false;
+  const isEnabled = newConfig.online_signals?.enabled ?? false;
+  const serverChanged = previousConfig?.online_signals?.server_url !== newConfig.online_signals?.server_url ||
+    previousConfig?.online_signals?.api_base_path !== newConfig.online_signals?.api_base_path;
+
+  if (onlineSignalsManager && (!isEnabled || serverChanged)) {
+    await onlineSignalsManager.stop();
+    onlineSignalsManager.dispose();
+    onlineSignalsManager = null;
+    if (eventLogDispatcher && onlineSignalsSink) {
+      eventLogDispatcher.removeSink(onlineSignalsSink);
+      onlineSignalsSink = null;
+    }
+  }
+
+  if (!onlineSignalsManager && isEnabled && eventLogDispatcher && gitRoot) {
+    const validation = validateOnlineSignalsConfig(newConfig);
+    if (!validation.valid) {
+      vscode.window.showErrorMessage(`Online signals config error: ${validation.error}`);
+    } else {
+      try {
+        onlineSignalsManager = createOnlineSignalsManager(
+          extensionContext,
+          workspaceRoot,
+          newConfig.online_signals!,
+          outputChannel
+        );
+        await onlineSignalsManager.start();
+        onlineSignalsSink = (event: EventEnvelope) => onlineSignalsManager?.processEvent(event);
+        eventLogDispatcher.addSink(onlineSignalsSink);
+        const statusDisposable = onlineSignalsManager.onDidChangeStatus(() => scheduleStatusBarUpdate('online-signals'));
+        extensionContext.subscriptions.push(statusDisposable);
+      } catch (error) {
+        console.error('Failed to start online signals manager after config change:', error);
+        onlineSignalsManager = null;
+      }
+    }
+  }
+
+  scheduleStatusBarUpdate('config-change');
+}
+
+/**
+ * Create a proxy event log with pluggable sinks.
+ */
+function createEventLogDispatcher(originalEventLog: IEventLog): {
+  eventLog: IEventLog;
+  addSink: (sink: EventSink) => void;
+  removeSink: (sink: EventSink) => void;
+} {
+  const sinks = new Set<EventSink>();
   const originalAppendEvent = originalEventLog.appendEvent.bind(originalEventLog);
 
-  // Create wrapper that forwards events
-  return new Proxy(originalEventLog, {
+  const proxy = new Proxy(originalEventLog, {
     get(target, prop) {
       if (prop === 'appendEvent') {
         return async function (type: any, payload: any, sessionId: string) {
-          // Call original
           const event = await originalAppendEvent(type, payload, sessionId);
 
-          // Forward to online signals manager
           if (event) {
-            try {
-              await manager.processEvent(event);
-            } catch (err) {
-              console.error('Failed to forward event to online signals:', err);
+            for (const sink of Array.from(sinks)) {
+              try {
+                await sink(event);
+              } catch (err) {
+                console.error('Event sink error:', err);
+              }
             }
           }
 
@@ -378,155 +600,283 @@ function createForwardingEventLog(originalEventLog: IEventLog, manager: OnlineSi
       return (target as any)[prop];
     }
   });
+
+  return {
+    eventLog: proxy as IEventLog,
+    addSink: (sink) => sinks.add(sink),
+    removeSink: (sink) => sinks.delete(sink),
+  };
 }
 
 /**
- * Validate online signals configuration
+ * Handle events for status cache updates.
  */
-function validateOnlineSignalsConfig(config: any): { valid: boolean; error?: string } {
-  if (!config.online_signals?.enabled) {
-    return { valid: true };
-  }
-
-  const { server_url } = config.online_signals;
-
-  if (!server_url || typeof server_url !== 'string') {
-    return { valid: false, error: 'online_signals.server_url is required when enabled' };
-  }
-
-  try {
-    const url = new URL(server_url);
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-      return { valid: false, error: 'server_url must use https:// or http://' };
+function handleStatusEvent(event: EventEnvelope): void {
+  if (event.type === 'BURST_FLAG' || event.type === 'TIME_TICK' || event.type === 'SESSION_END' || event.type === 'UNVERIFIED_CHANGES' || event.type === 'INTEGRITY_COMPROMISED') {
+    eventStatsDirty = true;
+    if (event.type === 'INTEGRITY_COMPROMISED') {
+      integrityCache = null;
     }
-  } catch {
-    return { valid: false, error: 'server_url must be a valid URL' };
+    scheduleStatusBarUpdate('event');
   }
-
-  return { valid: true };
-}
-
-/**
- * Update status bar with online indicator
- */
-function updateStatusBarWithOnlineStatus(text: string, isOnline: boolean): void {
-  if (!statusBarItem) {
-    return;
-  }
-  const indicator = isOnline ? '🟢' : '🔴';
-  statusBarItem.text = `${indicator} ${text}`;
-  statusBarItem.command = 'mojiProctor.showStatus';
-  updateStatusBarTooltip();
-  statusBarItem.show();
 }
 
 /**
  * Build rich tooltip for status bar
  */
-async function buildStatusBarTooltip(): Promise<vscode.MarkdownString> {
+async function buildStatusBarTooltip(state?: StatusBarState): Promise<vscode.MarkdownString> {
   const tooltip = new vscode.MarkdownString('', true);
   tooltip.isTrusted = {
     enabledCommands: [
       'mojiProctor.signIn',
       'mojiProctor.signOut',
+      'mojiProctor.showOnlineSignalsStatus',
+      'mojiProctor.retryUploadNow',
       'mojiProctor.generateReport',
-      'mojiProctor.showStatus',
       'mojiProctor.showSummary',
-      'mojiProctor.endSession',
+      'mojiProctor.showStatus',
     ],
   };
-  tooltip.supportHtml = true;
 
-  // Header
-  tooltip.appendMarkdown('## $(shield) Moji Proctor\n\n');
-
-  // Assignment info
-  if (currentAssignment) {
-    tooltip.appendMarkdown(`**Assignment:** ${currentAssignment.assignment_name}\n\n`);
-  }
-
-  // Mode indicator
-  if (onlineSignalsManager) {
-    tooltip.appendMarkdown('**Mode:** $(cloud-upload) Online Signals\n\n');
-
-    // Connection status
-    const isOnline = onlineSignalsManager.isOnline;
-    const connectionIcon = isOnline ? '$(pass-filled)' : '$(error)';
-    const connectionText = isOnline ? 'Connected' : 'Offline';
-    tooltip.appendMarkdown(`**Server:** ${connectionIcon} ${connectionText}\n\n`);
-
-    // Auth status
-    const authStatus = await onlineSignalsManager.getAuthStatus();
-    if (authStatus.authenticated && authStatus.user) {
-      tooltip.appendMarkdown(`**User:** $(account) ${authStatus.user.login}\n\n`);
-    } else {
-      tooltip.appendMarkdown('**User:** $(warning) Not signed in\n\n');
-      tooltip.appendMarkdown('*⚠️ Signals will not upload until you sign in*\n\n');
-    }
-
-    // Queue status
-    const stats = onlineSignalsManager.getStats();
-    if (stats.isPaused) {
-      tooltip.appendMarkdown(`**Queue:** $(debug-pause) Paused (${stats.queueSize} signals pending)\n\n`);
-    } else if (stats.queueSize > 0) {
-      tooltip.appendMarkdown(`**Queue:** $(sync) ${stats.queueSize} signals pending\n\n`);
-    } else {
-      tooltip.appendMarkdown('**Queue:** $(check) All signals uploaded\n\n');
-    }
-  } else {
-    tooltip.appendMarkdown('**Mode:** $(file) Local Only\n\n');
-  }
-
-  // Session info
-  if (timeTracker && timeTracker.isActive()) {
-    const sessionStats = timeTracker.getCurrentStats();
-    const focusedMins = Math.floor(sessionStats.total_focused_seconds / 60);
-    const activeMins = Math.floor(sessionStats.total_active_seconds / 60);
-    tooltip.appendMarkdown('---\n\n');
-    tooltip.appendMarkdown('### $(clock) Session\n\n');
-    tooltip.appendMarkdown(`**Focused:** ${focusedMins}m | **Active:** ${activeMins}m\n\n`);
-  }
-
-  // Separator and actions
-  tooltip.appendMarkdown('---\n\n');
-  tooltip.appendMarkdown('### $(list-unordered) Actions\n\n');
-
-  // Auth actions
-  if (onlineSignalsManager) {
-    const authStatus = await onlineSignalsManager.getAuthStatus();
-    if (authStatus.authenticated) {
-      tooltip.appendMarkdown('$(sign-out) [Sign Out](command:mojiProctor.signOut)\n\n');
-    } else {
-      tooltip.appendMarkdown('$(sign-in) [Sign In](command:mojiProctor.signIn)\n\n');
-    }
-  }
-
-  // Common actions
-  tooltip.appendMarkdown('$(file-text) [Generate Report](command:mojiProctor.generateReport)\n\n');
-  tooltip.appendMarkdown('$(info) [Show Status](command:mojiProctor.showStatus)\n\n');
-  tooltip.appendMarkdown('$(open-preview) [View Report](command:mojiProctor.showSummary)\n\n');
-
-  if (timeTracker && timeTracker.isActive()) {
-    tooltip.appendMarkdown('$(stop-circle) [End Session](command:mojiProctor.endSession)\n\n');
-  }
+  const resolvedState = state ?? await collectStatusBarState();
+  tooltip.appendMarkdown(buildStatusBarTooltipMarkdown(resolvedState));
 
   return tooltip;
 }
 
 /**
- * Update status bar tooltip (async update)
+ * Schedule a debounced status bar refresh
  */
-function updateStatusBarTooltip(): void {
+function scheduleStatusBarUpdate(_reason?: string): void {
+  if (statusUpdateTimer) {
+    return;
+  }
+  statusUpdateTimer = setTimeout(() => {
+    statusUpdateTimer = null;
+    void refreshStatusBar();
+  }, 250);
+}
+
+/**
+ * Refresh status bar text and tooltip
+ */
+async function refreshStatusBar(): Promise<void> {
   if (!statusBarItem) {
     return;
   }
 
-  // Build tooltip async and update when ready
-  buildStatusBarTooltip().then((tooltip) => {
-    if (statusBarItem) {
-      statusBarItem.tooltip = tooltip;
+  const state = await collectStatusBarState();
+  statusBarItem.text = buildStatusBarText(state);
+  statusBarItem.command = 'mojiProctor.showStatus';
+  statusBarItem.tooltip = await buildStatusBarTooltip(state);
+  statusBarItem.show();
+}
+
+/**
+ * Collect current status bar state
+ */
+async function collectStatusBarState(): Promise<StatusBarState> {
+  const onlineEnabled = currentConfig?.online_signals?.enabled ?? false;
+  const authStatus = onlineSignalsManager ? await onlineSignalsManager.getAuthStatus() : { authenticated: false, user: undefined };
+  const stats = onlineSignalsManager ? onlineSignalsManager.getStats() : { queueSize: 0, isPaused: false, pauseReason: null };
+  const eventStats = await getEventStats();
+  const integritySnapshot = await getIntegritySnapshot();
+
+  const integrityIssues = [...integritySnapshot.issues];
+  if (eventStats.unverifiedCount > 0) {
+    integrityIssues.push(`${eventStats.unverifiedCount} unverified change(s) detected`);
+  }
+  if (eventStats.integrityCompromisedReason) {
+    integrityIssues.push(eventStats.integrityCompromisedReason);
+  }
+
+  const integrityPassed = integritySnapshot.passed && eventStats.unverifiedCount === 0 && !eventStats.integrityCompromisedAt;
+  const tamperDetected = integritySnapshot.issues.length > 0 || Boolean(eventStats.integrityCompromisedAt) || Boolean(eventLog && eventLog.isCompromised());
+
+  return {
+    extensionMode,
+    activityLabel,
+    onlineEnabled,
+    onlineAuthenticated: Boolean(authStatus.authenticated),
+    onlineUser: authStatus.user?.login,
+    onlineServerUrl: currentConfig?.online_signals?.server_url || '',
+    assignmentName: currentAssignment?.assignment_name,
+    isOnline: onlineSignalsManager ? onlineSignalsManager.isOnline : false,
+    queueSize: stats.queueSize ?? 0,
+    isUploading: (stats as any).isUploading ?? false,
+    isBackoff: (stats as any).isBackoffActive ?? false,
+    isPaused: stats.isPaused ?? false,
+    pauseReason: stats.pauseReason ?? null,
+    lastFlushAt: (stats as any).lastFlushAt ?? null,
+    lastError: (stats as any).lastError ?? null,
+    lastErrorAt: (stats as any).lastErrorAt ?? null,
+    lastUploadAt: (stats as any).lastUploadAt ?? null,
+    integrityPassed,
+    integrityIssues,
+    integrityLastCheckedAt: integritySnapshot.checkedAt,
+    tamperDetected,
+    unverifiedCount: eventStats.unverifiedCount,
+    unverifiedLastDetectedAt: eventStats.unverifiedLastDetectedAt,
+    sessionId: timeTracker?.isActive() ? timeTracker.getSessionId() : null,
+    focusedSecondsToday: eventStats.focusedSecondsToday,
+    activeSecondsToday: eventStats.activeSecondsToday,
+    burstCountToday: eventStats.burstCountToday,
+  };
+}
+
+async function getEventStats(): Promise<{
+  dateKey: string;
+  focusedSecondsToday: number;
+  activeSecondsToday: number;
+  burstCountToday: number;
+  unverifiedCount: number;
+  unverifiedLastDetectedAt: string | null;
+  integrityCompromisedAt: string | null;
+  integrityCompromisedReason: string | null;
+}> {
+  const now = Date.now();
+  const todayKey = getDateKey(new Date());
+
+  if (eventStatsCache && !eventStatsDirty && eventStatsCache.dateKey === todayKey && now - eventStatsCache.computedAt < EVENT_STATS_TTL_MS) {
+    return eventStatsCache;
+  }
+
+  const fallback = {
+    dateKey: todayKey,
+    focusedSecondsToday: 0,
+    activeSecondsToday: 0,
+    burstCountToday: 0,
+    unverifiedCount: 0,
+    unverifiedLastDetectedAt: null,
+    integrityCompromisedAt: null,
+    integrityCompromisedReason: null,
+  };
+
+  if (!eventLog) {
+    return fallback;
+  }
+
+  const events = await eventLog.readAllEvents();
+  let focusedSecondsToday = 0;
+  let activeSecondsToday = 0;
+  let burstCountToday = 0;
+  let unverifiedCount = 0;
+  let unverifiedLastDetectedAt: string | null = null;
+  let integrityCompromisedAt: string | null = null;
+  let integrityCompromisedReason: string | null = null;
+  const sessionsWithTicks = new Set<string>();
+
+  for (const event of events) {
+    const eventDate = new Date(event.ts);
+    if (Number.isNaN(eventDate.getTime())) {
+      continue;
     }
-  }).catch(console.error);
+    const eventKey = getDateKey(eventDate);
+
+    if (eventKey === todayKey) {
+      if (event.type === 'TIME_TICK') {
+        const payload = event.payload as { focused_delta_seconds?: number; active_delta_seconds?: number };
+        if (typeof payload.focused_delta_seconds === 'number') {
+          focusedSecondsToday += payload.focused_delta_seconds;
+        }
+        if (typeof payload.active_delta_seconds === 'number') {
+          activeSecondsToday += payload.active_delta_seconds;
+        }
+        sessionsWithTicks.add(event.session_id);
+      } else if (event.type === 'SESSION_END') {
+        if (!sessionsWithTicks.has(event.session_id)) {
+          const payload = event.payload as { focused_seconds?: number; active_seconds?: number };
+          if (typeof payload.focused_seconds === 'number') {
+            focusedSecondsToday += payload.focused_seconds;
+          }
+          if (typeof payload.active_seconds === 'number') {
+            activeSecondsToday += payload.active_seconds;
+          }
+        }
+      } else if (event.type === 'BURST_FLAG') {
+        burstCountToday += 1;
+      }
+    }
+
+    if (event.type === 'UNVERIFIED_CHANGES') {
+      const payload = event.payload as { changes?: Array<unknown> };
+      const count = Array.isArray(payload.changes) ? payload.changes.length : 0;
+      if (!unverifiedLastDetectedAt || event.ts > unverifiedLastDetectedAt) {
+        unverifiedLastDetectedAt = event.ts;
+        unverifiedCount = count;
+      }
+    }
+
+    if (event.type === 'INTEGRITY_COMPROMISED') {
+      const payload = event.payload as { description?: string; reason?: string };
+      if (!integrityCompromisedAt || event.ts > integrityCompromisedAt) {
+        integrityCompromisedAt = event.ts;
+        integrityCompromisedReason = payload.description || payload.reason || 'Integrity compromised';
+      }
+    }
+  }
+
+  eventStatsCache = {
+    dateKey: todayKey,
+    focusedSecondsToday,
+    activeSecondsToday,
+    burstCountToday,
+    unverifiedCount,
+    unverifiedLastDetectedAt,
+    integrityCompromisedAt,
+    integrityCompromisedReason,
+    computedAt: now,
+  };
+  eventStatsDirty = false;
+
+  return eventStatsCache;
+}
+
+async function getIntegritySnapshot(): Promise<{ passed: boolean; issues: string[]; checkedAt: string }> {
+  const now = Date.now();
+  if (integrityCache && now - integrityCache.computedAt < INTEGRITY_CACHE_TTL_MS) {
+    return integrityCache;
+  }
+
+  if (!integrityService) {
+    const checkedAt = new Date().toISOString();
+    integrityCache = { passed: true, issues: [], checkedAt, computedAt: now };
+    return integrityCache;
+  }
+
+  const result = await integrityService.checkIntegrity();
+  const checkedAt = new Date().toISOString();
+  integrityCache = {
+    passed: result.passed,
+    issues: result.issues.map((issue) => issue.description),
+    checkedAt,
+    computedAt: now,
+  };
+  return integrityCache;
+}
+
+function setActivityLabel(label: string): void {
+  activityLabel = normalizeActivityLabel(label);
+  scheduleStatusBarUpdate('activity');
+}
+
+function setExtensionMode(mode: ExtensionMode, label?: string): void {
+  extensionMode = mode;
+  if (label) {
+    activityLabel = normalizeActivityLabel(label);
+  }
+  scheduleStatusBarUpdate('mode');
+}
+
+function normalizeActivityLabel(label: string): string {
+  return label.replace(/^Moji Proctor:\s*/i, '').trim();
+}
+
+function getDateKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 /**
@@ -589,47 +939,139 @@ async function generateReportCommand(): Promise<void> {
 }
 
 /**
- * Show status command
+ * Show status command - displays status info in a QuickPick menu with actions
  */
 async function showStatusCommand(): Promise<void> {
-  if (!timeTracker || !integrityService) {
-    vscode.window.showInformationMessage('Moji Proctor: Not active');
+  const state = await collectStatusBarState();
+  const markdownContent = buildStatusBarTooltipMarkdown(state);
+  
+  // Show the same content in the output channel, then show action buttons
+  outputChannel.clear();
+  outputChannel.appendLine('═══════════════════════════════════════════════════════════');
+  outputChannel.appendLine('                    MOJI PROCTOR STATUS');
+  outputChannel.appendLine('═══════════════════════════════════════════════════════════');
+  outputChannel.appendLine('');
+  
+  if (state.assignmentName) {
+    outputChannel.appendLine(`📚 Assignment: ${state.assignmentName}`);
+  }
+  
+  const modeLabel = state.onlineEnabled ? 'Online Signals Enabled' : state.extensionMode === 'active' ? 'Local-only' : 'Disabled';
+  outputChannel.appendLine(`📡 Mode: ${modeLabel}`);
+  
+  const authLabel = state.onlineEnabled
+    ? state.onlineAuthenticated
+      ? `Signed in as ${state.onlineUser ?? 'unknown'}`
+      : 'Signed out'
+    : 'Signed out';
+  outputChannel.appendLine(`🔐 Auth: ${authLabel}`);
+  
+  outputChannel.appendLine(`🌐 Server: ${state.onlineServerUrl || '—'}`);
+  
+  const lastFlush = state.lastFlushAt ? new Date(state.lastFlushAt).toLocaleString() : '—';
+  const lastError = state.lastError ? state.lastError.substring(0, 80) : 'none';
+  outputChannel.appendLine(`📤 Queue: ${state.queueSize} pending | last flush: ${lastFlush} | last error: ${lastError}`);
+  
+  const focused = formatDurationForOutput(state.focusedSecondsToday);
+  const active = formatDurationForOutput(state.activeSecondsToday);
+  outputChannel.appendLine(`⏱️  Session: ${state.sessionId ?? 'none'} | focused ${focused} | active ${active} | bursts ${state.burstCountToday}`);
+  
+  const integritySummary = state.integrityPassed === null ? 'Unknown' : state.integrityPassed ? 'Passed' : 'Issues detected';
+  const integrityDetail = state.integrityIssues && state.integrityIssues.length > 0 ? ` (${state.integrityIssues.join('; ').substring(0, 120)})` : '';
+  const integrityTime = state.integrityLastCheckedAt ? ` | last check: ${new Date(state.integrityLastCheckedAt).toLocaleString()}` : '';
+  outputChannel.appendLine(`🛡️  Integrity: ${integritySummary}${integrityDetail}${integrityTime}`);
+  
+  const unverifiedLast = state.unverifiedLastDetectedAt ? new Date(state.unverifiedLastDetectedAt).toLocaleString() : '—';
+  outputChannel.appendLine(`⚠️  Unverified changes: ${state.unverifiedCount} | last detected: ${unverifiedLast}`);
+  
+  outputChannel.appendLine('');
+  outputChannel.appendLine('───────────────────────────────────────────────────────────');
+  outputChannel.appendLine('Use the buttons below or run commands from Command Palette');
+  outputChannel.appendLine('───────────────────────────────────────────────────────────');
+  
+  outputChannel.show(true);
+  
+  // Build action buttons based on state
+  const actions: string[] = [];
+  if (state.extensionMode === 'active') {
+    actions.push('Generate Report');
+    actions.push('Show Summary');
+    if (state.onlineEnabled) {
+      if (state.onlineAuthenticated) {
+        actions.push('Sign Out');
+        actions.push('Retry Upload');
+      } else {
+        actions.push('Sign In');
+      }
+    }
+  }
+  
+  if (actions.length > 0) {
+    const selected = await vscode.window.showInformationMessage(
+      'Moji Proctor Status — See Output panel for details',
+      ...actions
+    );
+    
+    if (selected === 'Generate Report') {
+      await vscode.commands.executeCommand('mojiProctor.generateReport');
+    } else if (selected === 'Show Summary') {
+      await vscode.commands.executeCommand('mojiProctor.showSummary');
+    } else if (selected === 'Sign Out') {
+      await vscode.commands.executeCommand('mojiProctor.signOut');
+    } else if (selected === 'Sign In') {
+      await vscode.commands.executeCommand('mojiProctor.signIn');
+    } else if (selected === 'Retry Upload') {
+      await vscode.commands.executeCommand('mojiProctor.retryUploadNow');
+    }
+  }
+}
+
+/**
+ * Format duration for output display
+ */
+function formatDurationForOutput(seconds: number): string {
+  const rounded = Math.max(0, Math.floor(seconds));
+  if (rounded < 60) {
+    return `${rounded}s`;
+  }
+  const mins = Math.floor(rounded / 60);
+  const secs = rounded % 60;
+  if (mins < 60) {
+    return secs > 0 ? `${mins}m ${secs}s` : `${mins}m`;
+  }
+  const hours = Math.floor(mins / 60);
+  const remMins = mins % 60;
+  return remMins > 0 ? `${hours}h ${remMins}m` : `${hours}h`;
+}
+
+/**
+ * Show online signals status command
+ */
+async function showOnlineSignalsStatusCommand(): Promise<void> {
+  if (!onlineSignalsManager) {
+    vscode.window.showInformationMessage('Online signals mode is not enabled.');
     return;
   }
 
-  const stats = timeTracker.getCurrentStats();
-  const integrity = await integrityService.checkIntegrity();
+  const authStatus = await onlineSignalsManager.getAuthStatus();
+  const stats = onlineSignalsManager.getStats();
+  const statusInfo = onlineSignalsManager.getLastStatusInfo();
 
-  let message = `
-Moji Proctor Status
-
-Active: ${timeTracker.isActive()}
-Sessions: ${stats.session_count}
-Focused time: ${stats.total_focused_seconds}s
-Active time: ${stats.total_active_seconds}s
-
-Integrity: ${integrity.passed ? 'PASSED' : 'FAILED'}
-${integrity.issues.length > 0 ? integrity.issues.map((i) => `- ${i.description}`).join('\n') : ''}
-  `.trim();
-
-  // Add online signals status if enabled
-  if (onlineSignalsManager) {
-    const authStatus = await onlineSignalsManager.getAuthStatus();
-    const uploadStats = onlineSignalsManager.getStats();
-
-    message += `
-
-Online Signals: ${authStatus.authenticated ? `Connected as ${authStatus.user?.login}` : 'Not signed in (signals will not upload!)'}
-Queue: ${uploadStats.queueSize} signals pending${uploadStats.isPaused ? ' (PAUSED)' : ''}
-Server: ${onlineSignalsManager.isOnline ? '🟢 Online' : '🔴 Offline'}
-    `.trim();
-
-    if (!authStatus.authenticated) {
-      message += '\n\n⚠️ Run "Moji Proctor: Sign In" to upload signals to the server.';
-    }
-  }
-
-  vscode.window.showInformationMessage(message);
+  outputChannel.clear();
+  outputChannel.appendLine('Moji Proctor - Online Signals Status');
+  outputChannel.appendLine('');
+  outputChannel.appendLine(`Server: ${currentConfig?.online_signals?.server_url || '—'}`);
+  outputChannel.appendLine(`Online: ${onlineSignalsManager.isOnline ? 'Yes' : 'No'}`);
+  outputChannel.appendLine(`Auth: ${authStatus.authenticated ? `Signed in as ${authStatus.user?.login ?? 'unknown'}` : 'Signed out'}`);
+  outputChannel.appendLine(`Queue: ${stats.queueSize} pending${stats.isPaused ? ' (paused)' : ''}`);
+  outputChannel.appendLine(`Last upload: ${statusInfo.lastUploadAt ?? '—'}`);
+  outputChannel.appendLine(`Last flush: ${statusInfo.lastFlushAt ?? '—'}`);
+  outputChannel.appendLine(`Last error: ${statusInfo.lastError ?? '—'}`);
+  outputChannel.appendLine('');
+  outputChannel.appendLine('Commands:');
+  outputChannel.appendLine('- Moji Proctor: Sign In / Sign Out');
+  outputChannel.appendLine('- Moji Proctor: Retry Upload Now');
+  outputChannel.show(true);
 }
 
 /**
@@ -662,6 +1104,26 @@ async function showSummaryCommand(): Promise<void> {
         `Failed to open report: ${error instanceof Error ? error.message : String(error)}`
       );
     }
+  }
+}
+
+/**
+ * Open the config file in the editor if present
+ */
+async function openConfigFile(): Promise<void> {
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+  if (!workspaceFolder) {
+    vscode.window.showWarningMessage('No workspace folder open.');
+    return;
+  }
+
+  const configPath = require('path').join(workspaceFolder.uri.fsPath, CONFIG_FILENAME);
+  try {
+    await require('fs/promises').access(configPath);
+    const uri = vscode.Uri.file(configPath);
+    await vscode.window.showTextDocument(uri);
+  } catch {
+    vscode.window.showWarningMessage('Config file not found. Create moji-proctor.config.json at the workspace root.');
   }
 }
 
@@ -703,6 +1165,13 @@ async function endSessionCommand(): Promise<void> {
  * Manually flush queued signals command
  */
 async function flushSignalsCommand(): Promise<void> {
+  await retryUploadNowCommand();
+}
+
+/**
+ * Retry upload now command
+ */
+async function retryUploadNowCommand(): Promise<void> {
   if (!onlineSignalsManager) {
     vscode.window.showWarningMessage(
       'Online signals mode is not enabled.'
@@ -761,18 +1230,8 @@ async function flushSignalsCommand(): Promise<void> {
  * Update status bar
  */
 function updateStatusBar(text: string, priority: number): void {
-  if (!statusBarItem) {
-    statusBarItem = vscode.window.createStatusBarItem(
-      vscode.StatusBarAlignment.Right,
-      priority
-    );
-    statusBarItem.name = 'Moji Proctor Status';
-    statusBarItem.command = 'mojiProctor.showStatus';
-    extensionContext.subscriptions.push(statusBarItem);
-  }
-  statusBarItem.text = text;
-  updateStatusBarTooltip();
-  statusBarItem.show();
+  void priority;
+  setActivityLabel(text);
 }
 
 /**

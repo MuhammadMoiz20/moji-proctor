@@ -7,13 +7,13 @@
 
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { prisma } from '../index';
-import { verifySignature, getNextSequenceNumber, incrementSequenceNumber } from '../services/signatures';
+import { prisma } from '../index.js';
+import { verifySignature, getNextSequenceNumber, incrementSequenceNumber } from '../services/signatures.js';
 import {
   detectTampering,
   updateCheckpointState,
   createTamperFlag,
-} from '../services/tamperDetection';
+} from '../services/tamperDetection.js';
 import {
   sessionStartPayloadSchema,
   sessionEndPayloadSchema,
@@ -22,7 +22,7 @@ import {
   unverifiedChangesPayloadSchema,
   integrityCompromisedPayloadSchema,
   statusUpdatePayloadSchema,
-} from '../schemas/signals';
+} from '../schemas/signals.js';
 
 /**
  * Batch upload request

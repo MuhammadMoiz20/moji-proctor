@@ -17,6 +17,7 @@
   "online_signals": {
     "enabled": false,
     "server_url": "https://your-server.com",
+    "api_base_path": "/api",
     "max_batch": 50,
     "flush_interval_ms": 60000,
     "max_queue": 1000,

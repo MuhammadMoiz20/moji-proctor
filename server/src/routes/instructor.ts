@@ -7,9 +7,9 @@
 
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { prisma } from '../index';
-import { requireInstructor } from '../services/authz';
-import { getTamperFlagsForAssignment, getTamperFlags, markTamperFlagReviewed } from '../services/tamperDetection';
+import { prisma } from '../index.js';
+import { requireInstructor } from '../services/authz.js';
+import { getTamperFlagsForAssignment, getTamperFlags, markTamperFlagReviewed } from '../services/tamperDetection.js';
 
 /**
  * Register instructor routes

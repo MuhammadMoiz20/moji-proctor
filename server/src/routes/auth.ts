@@ -10,9 +10,9 @@
 
 import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { prisma } from '../index';
-import { generateTokenPair, verifyRefreshToken, revokeRefreshToken } from '../services/auth';
-import { getInitialRole } from '../services/authz';
+import { prisma } from '../index.js';
+import { generateTokenPair, verifyRefreshToken, revokeRefreshToken } from '../services/auth.js';
+import { getInitialRole } from '../services/authz.js';
 
 /**
  * Device flow start response

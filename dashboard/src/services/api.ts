@@ -1,4 +1,5 @@
 import { fetchWithAuth } from '../utils/api'
+import { apiUrl } from '../config/api'
 
 export interface Assignment {
   assignment_id: string
@@ -73,7 +74,7 @@ export interface StudentReport {
 
 export async function getAssignments(): Promise<Assignment[]> {
   try {
-    const response = await fetchWithAuth('/api/instructor/assignments')
+    const response = await fetchWithAuth(apiUrl('api/instructor/assignments'))
     if (!response.ok) {
       let errorMessage = `Failed to fetch assignments: ${response.status} ${response.statusText}`
       try {
@@ -103,7 +104,7 @@ export async function getAssignments(): Promise<Assignment[]> {
 }
 
 export async function getAssignmentStudents(assignmentId: string): Promise<Student[]> {
-  const response = await fetchWithAuth(`/api/instructor/assignments/${assignmentId}/students`)
+  const response = await fetchWithAuth(apiUrl(`api/instructor/assignments/${assignmentId}/students`))
   if (!response.ok) {
     throw new Error(`Failed to fetch students: ${response.statusText}`)
   }
@@ -112,7 +113,7 @@ export async function getAssignmentStudents(assignmentId: string): Promise<Stude
 }
 
 export async function getAssignmentSummary(assignmentId: string): Promise<AssignmentSummary> {
-  const response = await fetchWithAuth(`/api/instructor/assignments/${assignmentId}/summary`)
+  const response = await fetchWithAuth(apiUrl(`api/instructor/assignments/${assignmentId}/summary`))
   if (!response.ok) {
     throw new Error(`Failed to fetch summary: ${response.statusText}`)
   }
@@ -128,9 +129,9 @@ export async function getStudentTimeline(
   if (options?.type) params.append('type', options.type)
   if (options?.limit) params.append('limit', options.limit.toString())
 
-  const url = `/api/instructor/assignments/${assignmentId}/students/${studentId}/timeline${
+  const url = apiUrl(`api/instructor/assignments/${assignmentId}/students/${studentId}/timeline${
     params.toString() ? `?${params.toString()}` : ''
-  }`
+  }`)
   const response = await fetchWithAuth(url)
   if (!response.ok) {
     throw new Error(`Failed to fetch timeline: ${response.statusText}`)
@@ -143,7 +144,7 @@ export async function getStudentReport(
   assignmentId: string,
   studentId: string
 ): Promise<StudentReport> {
-  const response = await fetchWithAuth(`/api/instructor/assignments/${assignmentId}/students/${studentId}/report`)
+  const response = await fetchWithAuth(apiUrl(`api/instructor/assignments/${assignmentId}/students/${studentId}/report`))
   if (!response.ok) {
     throw new Error(`Failed to fetch student report: ${response.statusText}`)
   }

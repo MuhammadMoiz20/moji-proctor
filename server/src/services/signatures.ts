@@ -7,7 +7,7 @@
 
 import * as crypto from 'crypto';
 import { PrismaClient } from '@prisma/client';
-import { prisma } from '../prisma';
+import { prisma } from '../prisma.js';
 
 /**
  * Canonical JSON stringify (must match client implementation)

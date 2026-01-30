@@ -12,13 +12,13 @@ import Fastify, { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
 import rateLimit from '@fastify/rate-limit';
-import { disconnectPrisma } from './prisma';
-import { authRoutes } from './routes/auth';
-import { eventRoutes } from './routes/events';
-import { instructorRoutes } from './routes/instructor';
-import { healthRoutes } from './routes/health';
+import { disconnectPrisma } from './prisma.js';
+import { authRoutes } from './routes/auth.js';
+import { eventRoutes } from './routes/events.js';
+import { instructorRoutes } from './routes/instructor.js';
+import { healthRoutes } from './routes/health.js';
 
-export { prisma } from './prisma';
+export { prisma } from './prisma.js';
 
 /**
  * Validate required environment variables

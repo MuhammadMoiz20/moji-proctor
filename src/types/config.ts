@@ -13,6 +13,8 @@ export interface OnlineSignalsConfig {
   enabled: boolean;
   /** Server URL for signal upload (e.g., https://signals.moji-proctor.dev) */
   server_url: string;
+  /** Base path for API endpoints (default: "/api") */
+  api_base_path?: string;
   /** Maximum number of events to batch before sending (default: 50) */
   max_batch?: number;
   /** Flush interval in milliseconds - how often to send queued events (default: 60000 = 1 minute) */
@@ -71,6 +73,7 @@ export const DEFAULT_CONFIG: Required<Omit<MojiProctorConfig, 'course_id' | 'ass
   online_signals: {
     enabled: false,
     server_url: '',
+    api_base_path: '/api',
     max_batch: 50,
     flush_interval_ms: 60000,
     max_queue: 1000,

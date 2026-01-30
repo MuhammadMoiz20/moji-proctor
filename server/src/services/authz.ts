@@ -5,7 +5,7 @@
  */
 
 import { FastifyRequest } from 'fastify';
-import { prisma } from '../index';
+import { prisma } from '../index.js';
 
 /**
  * User roles

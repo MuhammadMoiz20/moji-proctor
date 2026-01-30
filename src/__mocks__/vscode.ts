@@ -20,15 +20,18 @@ export const ExtensionContext = {};
 
 export const window = {
   createStatusBarItem(): any { return {}; },
+  createOutputChannel(): any { return { appendLine(): void {}, show(): void {}, clear(): void {} }; },
   showInformationMessage(): any {},
   showErrorMessage(): any {},
-  showWarningMessage(): any {}
+  showWarningMessage(): any {},
+  showTextDocument(): any {}
 };
 
 export const workspace = {
   onDidChangeTextDocument(): any {},
   onDidOpenTextDocument(): any {},
   onDidCloseTextDocument(): any {},
+  createFileSystemWatcher(): any { return { onDidChange(): any {}, onDidCreate(): any {}, onDidDelete(): any {}, dispose(): void {} }; },
   workspaceFolders: []
 };
 
@@ -38,6 +41,13 @@ export const commands = {
 };
 
 export const extensions = [];
+
+export const env = {
+  openExternal(): any {},
+  clipboard: {
+    writeText(): any {}
+  }
+};
 
 export const Uri = {
   file(): any { return {}; },

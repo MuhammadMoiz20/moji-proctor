@@ -3,6 +3,19 @@
  */
 export async function healthRoutes(fastify) {
     /**
+     * GET /
+     *
+     * Root endpoint - API info
+     */
+    fastify.get('/', async (request, reply) => {
+        return reply.send({
+            name: 'Moji Proctor API',
+            version: '1.0.0',
+            status: 'ok',
+            timestamp: new Date().toISOString(),
+        });
+    });
+    /**
      * GET /health
      *
      * Health check endpoint

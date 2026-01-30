@@ -8,15 +8,17 @@
 
 import * as vscode from 'vscode';
 import { EventEmitter } from 'events';
+import * as fs from 'fs/promises';
+import * as path from 'path';
 import {
   SignalEnvelope,
-  SignalType,
   BatchUploadRequest,
   BatchUploadResponse,
 } from '../types/signals';
 import { DeviceKeyManager } from './deviceKeyManager';
 import { OnlineSignalsConfig } from '../types/config';
 import { httpClient, HttpError } from '../utils/httpClient';
+import { buildApiUrl } from '../utils/apiUrl';
 
 /**
  * Queued signal awaiting upload
@@ -77,6 +79,7 @@ export class SignalBatcher extends EventEmitter {
   private uploadPaused: boolean = false;
   private pauseReason: string | null = null;
   private assignmentId: string | null = null;
+  private readonly queueFilePath: string;
 
   // Persisted queue storage key
   private static readonly QUEUE_STORAGE_KEY = 'moji-proctor.signal.queue';
@@ -91,14 +94,15 @@ export class SignalBatcher extends EventEmitter {
     private readonly getAccessToken?: () => Promise<string | null>
   ) {
     super();
-    this.loadPersistedState();
+    this.queueFilePath = path.join(this.context.globalStorageUri.fsPath, 'online-signals-queue.json');
   }
 
   /**
    * Start the batcher
    */
-  start(assignmentId: string): void {
+  async start(assignmentId: string): Promise<void> {
     this.assignmentId = assignmentId;
+    await this.loadPersistedState();
     this.startFlushTimer();
   }
 
@@ -122,6 +126,10 @@ export class SignalBatcher extends EventEmitter {
     this.uploadPaused = true;
     this.pauseReason = reason ?? this.pauseReason;
     this.context.globalState.update(SignalBatcher.PAUSED_KEY, true);
+    if (this.pauseReason) {
+      this.context.globalState.update(SignalBatcher.PAUSED_KEY + '.reason', this.pauseReason);
+    }
+    this.schedulePersist();
     if (reason) {
       console.warn('[SignalBatcher] Uploads paused:', reason);
     }
@@ -134,6 +142,8 @@ export class SignalBatcher extends EventEmitter {
     this.uploadPaused = false;
     this.pauseReason = null;
     this.context.globalState.update(SignalBatcher.PAUSED_KEY, false);
+    this.context.globalState.update(SignalBatcher.PAUSED_KEY + '.reason', null);
+    this.schedulePersist();
     // Clear any backoff timer to allow immediate flush
     this.clearBackoffTimer();
     this.flush();
@@ -160,6 +170,7 @@ export class SignalBatcher extends EventEmitter {
     if (this.queue.length >= this.options.maxQueue) {
       this.queue.shift(); // Remove oldest
       this.emit('dropped', { reason: 'queue_full' });
+      this.emitQueueChanged();
     }
 
     const queuedSignal: QueuedSignal = {
@@ -170,6 +181,7 @@ export class SignalBatcher extends EventEmitter {
 
     this.queue.push(queuedSignal);
     this.schedulePersist();
+    this.emitQueueChanged();
 
     // Flush if we've reached batch size
     if (this.queue.length >= this.options.maxBatch) {
@@ -201,6 +213,7 @@ export class SignalBatcher extends EventEmitter {
       // Take a batch of signals
       const batchSize = Math.min(this.options.maxBatch, this.queue.length);
       const batch = this.queue.splice(0, batchSize);
+      this.emitQueueChanged();
 
       // Skip signals that have exceeded max retries
       const validSignals = batch.filter(s => s.retryCount < this.options.maxRetries);
@@ -267,6 +280,7 @@ export class SignalBatcher extends EventEmitter {
                 this.queue.push(signal);
               }
               this.emit('dropped', { reason: 'server_rejected', count: 1 });
+              this.emitQueueChanged();
             }
           }
         }
@@ -306,6 +320,7 @@ export class SignalBatcher extends EventEmitter {
           // Re-queue signals without incrementing retry count
           this.queue.unshift(...validSignals);
           this.schedulePersist();
+          this.emitQueueChanged();
 
           return { uploaded: 0, rejected: 0, remaining: this.queue.length };
         }
@@ -319,6 +334,7 @@ export class SignalBatcher extends EventEmitter {
           this.queue.push(signal);
         }
         this.schedulePersist();
+        this.emitQueueChanged();
 
         this.emit('uploadFailed', {
           error: error instanceof Error ? error.message : String(error),
@@ -391,6 +407,27 @@ export class SignalBatcher extends EventEmitter {
   }
 
   /**
+   * Check if currently uploading
+   */
+  isUploadInProgress(): boolean {
+    return this.isUploading;
+  }
+
+  /**
+   * Check if backoff timer is active
+   */
+  isBackoffActive(): boolean {
+    return this.backoffTimer !== null;
+  }
+
+  /**
+   * Emit queue changed event
+   */
+  private emitQueueChanged(): void {
+    this.emit('queueChanged', { size: this.queue.length });
+  }
+
+  /**
    * Prepare batch upload request with signatures
    *
    * @param signals - Signals to upload
@@ -441,7 +478,7 @@ export class SignalBatcher extends EventEmitter {
    * @returns Server response
    */
   private async uploadToServer(request: BatchUploadRequest, accessToken?: string): Promise<BatchUploadResponse> {
-    const url = `${this.config.server_url}/api/events/batch`;
+    const url = buildApiUrl(this.config.server_url, this.config.api_base_path, '/events/batch');
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
@@ -449,11 +486,6 @@ export class SignalBatcher extends EventEmitter {
 
     if (accessToken) {
       headers['Authorization'] = `Bearer ${accessToken}`;
-      // Log token info for debugging (first 20 chars only for security)
-      const tokenPreview = accessToken.length > 20 ? accessToken.substring(0, 20) + '...' : accessToken;
-      console.log('[SignalBatcher] Uploading with auth token:', tokenPreview, 'length:', accessToken.length);
-    } else {
-      console.log('[SignalBatcher] WARNING: Uploading WITHOUT auth token');
     }
 
     console.log(`[SignalBatcher] Uploading ${request.signals.length} signals to ${url}`);
@@ -463,15 +495,17 @@ export class SignalBatcher extends EventEmitter {
       headers,
       body: JSON.stringify(request),
       timeout: 30000, // 30 second timeout
+      maxResponseBytes: 512 * 1024, // 512KB cap
     });
 
     console.log('[SignalBatcher] Response status:', response.status, response.statusText);
 
     if (!response.ok) {
       const text = await response.text();
-      console.error('[SignalBatcher] Upload failed response body:', text);
+      const safeText = text.length > 200 ? text.substring(0, 200) + '...' : text;
+      console.error('[SignalBatcher] Upload failed:', response.status, response.statusText);
       // Throw HttpError for proper handling in flush()
-      throw new HttpError(response.status, response.statusText, `Upload failed: ${response.status} ${response.statusText} - ${text}`);
+      throw new HttpError(response.status, response.statusText, `Upload failed: ${response.status} ${response.statusText} - ${safeText}`);
     }
 
     return response.json() as Promise<BatchUploadResponse>;
@@ -486,7 +520,8 @@ export class SignalBatcher extends EventEmitter {
   private calculateRetryDelay(retryCount: number): number {
     // Exponential backoff: base * 2^retryCount, capped at 5 minutes
     const delay = this.options.baseRetryDelayMs * Math.pow(2, retryCount - 1);
-    return Math.min(delay, 5 * 60 * 1000);
+    const jitter = delay * 0.2 * Math.random();
+    return Math.min(delay + jitter, 5 * 60 * 1000);
   }
 
   /**
@@ -533,19 +568,60 @@ export class SignalBatcher extends EventEmitter {
   /**
    * Load persisted queue and state from storage
    */
-  private loadPersistedState(): void {
-    // Load queue
+  private async loadPersistedState(): Promise<void> {
+    await this.ensureStorageDir();
+
+    try {
+      const raw = await fs.readFile(this.queueFilePath, 'utf8');
+      const parsed = JSON.parse(raw) as {
+        queue?: QueuedSignal[];
+        paused?: boolean;
+        pauseReason?: string | null;
+      };
+      if (Array.isArray(parsed.queue)) {
+        this.queue = parsed.queue;
+        if (this.queue.length > this.options.maxQueue) {
+          const dropped = this.queue.length - this.options.maxQueue;
+          this.queue = this.queue.slice(-this.options.maxQueue);
+          this.emit('dropped', { reason: 'queue_full', count: dropped });
+        }
+      }
+      this.uploadPaused = Boolean(parsed.paused);
+      this.pauseReason = parsed.pauseReason ?? null;
+      this.emitQueueChanged();
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT') {
+        console.error('[SignalBatcher] Failed to load persisted queue:', error);
+      }
+    }
+
+    // Fallback to globalState for migration (pre-file persistence)
     const queueData = this.context.globalState.get<QueuedSignal[]>(
       SignalBatcher.QUEUE_STORAGE_KEY,
       []
     );
     this.queue = queueData;
-
-    // Load paused state
+    if (this.queue.length > this.options.maxQueue) {
+      const dropped = this.queue.length - this.options.maxQueue;
+      this.queue = this.queue.slice(-this.options.maxQueue);
+      this.emit('dropped', { reason: 'queue_full', count: dropped });
+    }
     this.uploadPaused = this.context.globalState.get<boolean>(
       SignalBatcher.PAUSED_KEY,
       false
     );
+    this.pauseReason = this.context.globalState.get<string | null>(
+      SignalBatcher.PAUSED_KEY + '.reason',
+      null
+    );
+
+    if (queueData.length > 0) {
+      await this.persistQueue();
+    }
+
+    this.emitQueueChanged();
   }
 
   /**
@@ -554,7 +630,13 @@ export class SignalBatcher extends EventEmitter {
    */
   private async persistQueue(): Promise<void> {
     this.clearPersistTimer();
-    await this.context.globalState.update(SignalBatcher.QUEUE_STORAGE_KEY, this.queue);
+    await this.ensureStorageDir();
+    const payload = {
+      queue: this.queue,
+      paused: this.uploadPaused,
+      pauseReason: this.pauseReason,
+    };
+    await fs.writeFile(this.queueFilePath, JSON.stringify(payload), 'utf8');
   }
 
   /**
@@ -581,12 +663,25 @@ export class SignalBatcher extends EventEmitter {
   }
 
   /**
+   * Ensure global storage directory exists
+   */
+  private async ensureStorageDir(): Promise<void> {
+    const dir = path.dirname(this.queueFilePath);
+    try {
+      await fs.mkdir(dir, { recursive: true });
+    } catch {
+      // Ignore if already exists
+    }
+  }
+
+  /**
    * Clear the queue (for testing or reset)
    */
   async clearQueue(): Promise<void> {
     this.clearPersistTimer();
     this.queue = [];
     await this.persistQueue();
+    this.emitQueueChanged();
   }
 }
 

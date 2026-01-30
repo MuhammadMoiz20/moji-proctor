@@ -84,8 +84,12 @@ export async function eventRoutes(fastify) {
                     eventId: signal.event_id,
                     type: signal.type,
                     assignmentId: signal.assignment_id,
-                    seq: signal.seq
+                    seq: signal.seq,
+                    devicePubKey: signal.device_pubkey.substring(0, 16) + '...'
                 }, 'Processing signal');
+                fastify.log.debug({
+                    signalPayload: JSON.stringify(signal.payload).substring(0, 200)
+                }, 'Signal payload');
                 // 1. Validate payload based on type
                 const payloadSchema = payloadSchemas[signal.type];
                 if (!payloadSchema) {
@@ -104,22 +108,38 @@ export async function eventRoutes(fastify) {
                     continue;
                 }
                 // 2. Verify signature FIRST (before any DB operations)
+                // IMPORTANT: Use original payload for signature verification, not validated one
+                // The client signs the original payload, so we must verify against the same data
                 const payloadToVerify = {
                     event_id: signal.event_id,
                     ts: signal.ts,
                     session_id: signal.session_id,
                     type: signal.type,
-                    payload: validatedPayload.data, // Use validated payload
+                    payload: signal.payload, // Use ORIGINAL payload for signature verification
                     assignment_id: signal.assignment_id,
                     course_id: signal.course_id,
                     commit_sha: signal.commit_sha,
                     repo_identifier: signal.repo_identifier,
                 };
+                fastify.log.debug({
+                    eventId: signal.event_id,
+                    payloadToVerify: JSON.stringify(payloadToVerify).substring(0, 300)
+                }, 'Verifying signature');
                 const isValid = verifySignature(payloadToVerify, signal.sig, signal.device_pubkey);
                 if (!isValid) {
+                    // Log detailed info for debugging
+                    const payloadJson = JSON.stringify(payloadToVerify);
+                    fastify.log.error({
+                        eventId: signal.event_id,
+                        devicePubKey: signal.device_pubkey.substring(0, 16) + '...',
+                        signaturePrefix: signal.sig.substring(0, 32) + '...',
+                        payloadLength: payloadJson.length,
+                        payloadPreview: payloadJson.substring(0, 200),
+                    }, 'SIGNATURE VERIFICATION FAILED');
                     rejected.push(signal.event_id);
                     continue;
                 }
+                fastify.log.info({ eventId: signal.event_id }, 'Signature verified successfully');
                 // 3. Get or create device AFTER signature verification
                 // Device is bound to the authenticated user
                 const device = await prisma.device.upsert({
@@ -142,15 +162,42 @@ export async function eventRoutes(fastify) {
                 }
                 // 5. Verify sequence number atomically
                 const currentSeq = await getNextSequenceNumber(device.id, signal.assignment_id);
+                fastify.log.debug({
+                    eventId: signal.event_id,
+                    signalSeq: signal.seq,
+                    currentSeq,
+                    expectedSeq: currentSeq + 1
+                }, 'Checking sequence number');
                 if (signal.seq <= currentSeq) {
                     // Replay or out of order
+                    fastify.log.warn({
+                        eventId: signal.event_id,
+                        signalSeq: signal.seq,
+                        currentSeq,
+                    }, 'Sequence number replay/out-of-order');
                     rejected.push(signal.event_id);
                     continue;
                 }
-                if (signal.seq !== currentSeq + 1) {
+                // Allow gap if this is the first signal for this device/assignment
+                // This handles the case where the extension has been running but the server
+                // database is fresh (or was reset)
+                const isFirstSignal = currentSeq === 0;
+                if (signal.seq !== currentSeq + 1 && !isFirstSignal) {
                     // Gap in sequence - reject to prevent replay
+                    fastify.log.warn({
+                        eventId: signal.event_id,
+                        signalSeq: signal.seq,
+                        currentSeq,
+                        expectedSeq: currentSeq + 1
+                    }, 'Sequence number gap');
                     rejected.push(signal.event_id);
                     continue;
+                }
+                if (isFirstSignal && signal.seq !== 1) {
+                    fastify.log.info({
+                        eventId: signal.event_id,
+                        signalSeq: signal.seq,
+                    }, 'Accepting first signal with non-1 sequence (initial sync)');
                 }
                 // 6. Check for duplicate event_id
                 const existing = await prisma.signal.findUnique({
@@ -184,7 +231,8 @@ export async function eventRoutes(fastify) {
                 await prisma.$transaction(async (tx) => {
                     // Re-check sequence in transaction to prevent race conditions
                     const txSeq = await getNextSequenceNumber(device.id, signal.assignment_id);
-                    if (signal.seq !== txSeq + 1) {
+                    const isInitialSync = txSeq === 0 && signal.seq > 1;
+                    if (signal.seq !== txSeq + 1 && !isInitialSync) {
                         throw new Error('Sequence number mismatch in transaction');
                     }
                     // Create signal record
@@ -260,7 +308,13 @@ export async function eventRoutes(fastify) {
                 accepted.push(signal.event_id);
             }
             catch (error) {
-                fastify.log.error({ error, signalId: signal.event_id }, 'Failed to process signal');
+                const err = error;
+                fastify.log.error({
+                    errorMessage: err.message,
+                    errorName: err.name,
+                    errorStack: err.stack?.split('\n').slice(0, 5).join('\n'),
+                    signalId: signal.event_id
+                }, 'Failed to process signal');
                 rejected.push(signal.event_id);
             }
         }

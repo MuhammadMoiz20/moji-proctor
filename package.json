@@ -41,6 +41,14 @@
         "title": "Moji Proctor: Sign Out"
       },
       {
+        "command": "mojiProctor.showOnlineSignalsStatus",
+        "title": "Moji Proctor: Show Online Signals Status"
+      },
+      {
+        "command": "mojiProctor.retryUploadNow",
+        "title": "Moji Proctor: Retry Upload Now"
+      },
+      {
         "command": "mojiProctor.flushSignals",
         "title": "Moji Proctor: Upload Signals Now"
       },

@@ -24,6 +24,7 @@ export interface RequestOptions {
   body?: string;
   timeout?: number;
   signal?: AbortSignal;
+  maxResponseBytes?: number;
 }
 
 /**
@@ -89,6 +90,7 @@ export function httpClient(url: string, options: RequestOptions = {}): Promise<H
     const parsedUrl = new URL(url);
     const isHttps = parsedUrl.protocol === 'https:';
     const client = isHttps ? https : http;
+    const maxResponseBytes = options.maxResponseBytes ?? 1024 * 1024; // 1MB default
 
     const requestOptions: https.RequestOptions | http.RequestOptions = {
       method: options.method || 'GET',
@@ -100,8 +102,22 @@ export function httpClient(url: string, options: RequestOptions = {}): Promise<H
 
     const req = client.request(requestOptions, (res) => {
       const chunks: Buffer[] = [];
+      let totalBytes = 0;
+
+      const contentLength = res.headers['content-length'];
+      if (contentLength && Number(contentLength) > maxResponseBytes) {
+        res.destroy();
+        reject(new Error('Response too large'));
+        return;
+      }
 
       res.on('data', (chunk) => {
+        totalBytes += chunk.length;
+        if (totalBytes > maxResponseBytes) {
+          res.destroy();
+          reject(new Error('Response too large'));
+          return;
+        }
         chunks.push(chunk);
       });
 
@@ -113,7 +129,13 @@ export function httpClient(url: string, options: RequestOptions = {}): Promise<H
           statusText: res.statusMessage || '',
           headers,
           ok: (res.statusCode || 0) >= 200 && (res.statusCode || 0) < 300,
-          json: async () => JSON.parse(body),
+          json: async () => {
+            try {
+              return JSON.parse(body);
+            } catch {
+              throw new Error('Failed to parse JSON response');
+            }
+          },
           text: async () => body,
         };
         resolve(response);

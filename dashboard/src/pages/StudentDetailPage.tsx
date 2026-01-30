@@ -13,7 +13,6 @@ import {
   Clock,
   Zap,
   FileCheck,
-  AlertTriangle,
   Copy,
   Check,
   Download,
@@ -420,7 +419,7 @@ export default function StudentDetailPage() {
         <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6 space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold text-white">Unverified Changes</h2>
-            <AlertTriangle className="h-5 w-5 text-amber-300" />
+            <span className="text-xl">😲</span>
           </div>
           <div className="text-3xl font-display font-semibold text-white">
             {report?.unverified_changes ?? 0}
@@ -589,7 +588,7 @@ export default function StudentDetailPage() {
                       <Calendar className="h-4 w-4" />
                       <span>{format(parseISO(signal.ts), 'PPpp')}</span>
                     </div>
-                    {signal.payload && (
+                    {signal.payload && typeof signal.payload === 'object' ? (
                       <div className="mt-2">
                         <details className="text-sm">
                           <summary className="cursor-pointer text-slate-400 hover:text-white">
@@ -600,7 +599,7 @@ export default function StudentDetailPage() {
                           </pre>
                         </details>
                       </div>
-                    )}
+                    ) : null}
                   </div>
                 </div>
               </div>

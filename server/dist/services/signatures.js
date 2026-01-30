@@ -45,7 +45,11 @@ function canonicalReplacer(key, value) {
  */
 export function verifySignature(payload, signatureHex, publicKeyHex) {
     try {
-        const message = Buffer.from(canonicalStringify(payload), 'utf8');
+        const canonicalPayload = canonicalStringify(payload);
+        console.log('[Signatures] Verifying signature for payload:', canonicalPayload.substring(0, 200) + '...');
+        console.log('[Signatures] Public key:', publicKeyHex.substring(0, 20) + '...');
+        console.log('[Signatures] Signature:', signatureHex.substring(0, 40) + '...');
+        const message = Buffer.from(canonicalPayload, 'utf8');
         const signature = Buffer.from(signatureHex, 'hex');
         const publicKeyRaw = Buffer.from(publicKeyHex, 'hex');
         // Create DER-encoded SPKI for Ed25519 public key
