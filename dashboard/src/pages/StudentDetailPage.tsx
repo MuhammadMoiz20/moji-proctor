@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { getStudentTimeline, getStudentReport, Signal, StudentReport } from '../services/api'
 import {
@@ -50,13 +50,7 @@ export default function StudentDetailPage() {
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc')
   const [copied, setCopied] = useState(false)
 
-  useEffect(() => {
-    if (assignmentId && studentId) {
-      loadData()
-    }
-  }, [assignmentId, studentId])
-
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     if (!assignmentId || !studentId) return
 
     try {
@@ -76,7 +70,13 @@ export default function StudentDetailPage() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [assignmentId, studentId])
+
+  useEffect(() => {
+    if (assignmentId && studentId) {
+      loadData()
+    }
+  }, [assignmentId, studentId, loadData])
 
   const handleCopy = () => {
     if (!studentId) return

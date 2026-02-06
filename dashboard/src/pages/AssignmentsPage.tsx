@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { getAssignments, Assignment } from '../services/api'
 import { BookOpen, Activity, Loader2, AlertCircle, Search, RefreshCw } from 'lucide-react'
@@ -12,15 +12,7 @@ export default function AssignmentsPage() {
   const { isAuthenticated } = useAuth()
   const navigate = useNavigate()
 
-  useEffect(() => {
-    if (!isAuthenticated) {
-      navigate('/login')
-      return
-    }
-    loadAssignments()
-  }, [isAuthenticated, navigate])
-
-  const loadAssignments = async () => {
+  const loadAssignments = useCallback(async () => {
     try {
       setLoading(true)
       setError(null)
@@ -38,7 +30,15 @@ export default function AssignmentsPage() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [navigate])
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      navigate('/login')
+      return
+    }
+    loadAssignments()
+  }, [isAuthenticated, navigate, loadAssignments])
 
   // All hooks must be called before any conditional returns
   const filteredAssignments = useMemo(() => {
@@ -88,7 +88,7 @@ export default function AssignmentsPage() {
                 <div className="text-xs text-red-200/80 mt-2 w-full">
                   <p>Make sure:</p>
                   <ul className="list-disc list-inside mt-1 space-y-1">
-                    <li>The server is running on http://localhost:3000</li>
+                    <li>The API server is reachable at the configured URL</li>
                     <li>You are logged in with an instructor account</li>
                     <li>Your GitHub account is in the INSTRUCTOR_ALLOWLIST</li>
                   </ul>

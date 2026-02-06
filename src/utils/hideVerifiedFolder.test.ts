@@ -18,6 +18,18 @@ vi.mock('child_process', () => ({
 
 const mockExecFile = execFile as unknown as ReturnType<typeof vi.fn>;
 
+function mockExecFileWithSuccess(): void {
+  mockExecFile.mockImplementation((_command: string, _args: string[], callback: (error: Error | null, stdout?: string, stderr?: string) => void) => {
+    callback(null, '', '');
+  });
+}
+
+function mockExecFileWithFailure(message: string): void {
+  mockExecFile.mockImplementation((_command: string, _args: string[], callback: (error: Error | null, stdout?: string, stderr?: string) => void) => {
+    callback(new Error(message));
+  });
+}
+
 describe('hideVerifiedFolder - Config Toggle', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -30,7 +42,7 @@ describe('hideVerifiedFolder - Config Toggle', () => {
   });
 
   it('should execute command when enabled (on supported platforms)', async () => {
-    mockExecFile.mockResolvedValue({ stdout: '', stderr: '' });
+    mockExecFileWithSuccess();
 
     await hideVerifiedFolder('/workspace/.verified', '/workspace', true);
 
@@ -53,7 +65,7 @@ describe('hideVerifiedFolder - Security', () => {
   });
 
   it('should allow verifiedPath within assignment root', async () => {
-    mockExecFile.mockResolvedValue({ stdout: '', stderr: '' });
+    mockExecFileWithSuccess();
 
     await expect(
       hideVerifiedFolder('/workspace/.verified', '/workspace', true)
@@ -67,7 +79,7 @@ describe('hideVerifiedFolder - Security', () => {
   });
 
   it('should handle relative paths correctly', async () => {
-    mockExecFile.mockResolvedValue({ stdout: '', stderr: '' });
+    mockExecFileWithSuccess();
 
     // Relative path that resolves within root
     await expect(
@@ -84,7 +96,7 @@ describe('hideVerifiedFolder - Error Handling', () => {
   it('should silently ignore execFile errors on Windows', async () => {
     // Mock Windows platform by checking behavior
     // The actual test just verifies error handling
-    mockExecFile.mockRejectedValue(new Error('Command failed'));
+    mockExecFileWithFailure('Command failed');
 
     // On Windows, this would call execFile but ignore errors
     // Since we're on Linux in tests, it's a no-op, but we verify the function doesn't throw

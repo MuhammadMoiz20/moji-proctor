@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import {
   getAssignmentStudents,
@@ -28,13 +28,7 @@ export default function AssignmentDetailPage() {
   const [query, setQuery] = useState('')
   const [sortKey, setSortKey] = useState<'signals' | 'sessions' | 'last_seen'>('signals')
 
-  useEffect(() => {
-    if (assignmentId) {
-      loadData()
-    }
-  }, [assignmentId])
-
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     if (!assignmentId) return
 
     try {
@@ -52,7 +46,13 @@ export default function AssignmentDetailPage() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [assignmentId])
+
+  useEffect(() => {
+    if (assignmentId) {
+      loadData()
+    }
+  }, [assignmentId, loadData])
 
   // All hooks must be called before any conditional returns
   const filteredStudents = useMemo(() => {

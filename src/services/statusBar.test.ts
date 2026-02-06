@@ -41,17 +41,17 @@ describe('Status bar emoji', () => {
 
   it('shows signed-out emoji when online enabled and signed out', () => {
     const emoji = getStatusEmoji(baseState({ onlineEnabled: true, onlineAuthenticated: false }));
-    expect(emoji).toBe('�');
+    expect(emoji).toBe('😤');
   });
 
   it('shows uploading emoji when queue has items', () => {
     const emoji = getStatusEmoji(baseState({ onlineEnabled: true, onlineAuthenticated: true, queueSize: 3 }));
-    expect(emoji).toBe('�😄');
+    expect(emoji).toBe('🚀😄');
   });
 
   it('shows offline emoji when offline', () => {
     const emoji = getStatusEmoji(baseState({ onlineEnabled: true, onlineAuthenticated: true, isOnline: false }));
-    expect(emoji).toBe('�‍💫');
+    expect(emoji).toBe('😵‍💫');
   });
 
   it('shows integrity warning emoji when integrity fails', () => {
@@ -61,7 +61,7 @@ describe('Status bar emoji', () => {
 
   it('shows tamper emoji when tamper detected', () => {
     const emoji = getStatusEmoji(baseState({ tamperDetected: true }));
-    expect(emoji).toBe('�');
+    expect(emoji).toBe('😱');
   });
 
   it('shows disabled emoji when extension disabled', () => {

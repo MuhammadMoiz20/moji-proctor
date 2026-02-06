@@ -94,7 +94,7 @@ export async function getAssignments(): Promise<Assignment[]> {
     return data.assignments || []
   } catch (error) {
     if (error instanceof TypeError && error.message.includes('fetch')) {
-      throw new Error('Network error: Cannot connect to server. Make sure the server is running on http://localhost:3000')
+      throw new Error('Network error: Cannot connect to the API server. Verify the server is running and the dashboard API URL is configured correctly.')
     }
     if (error instanceof Error) {
       throw error
