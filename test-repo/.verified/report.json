@@ -1,0 +1,41 @@
+{
+  "schema_version": "0.1.0",
+  "generated_at": "2026-01-31T08:35:50.344Z",
+  "assignment_id": "test-assignment-3",
+  "session_id": "62e26e8c-345a-4c6c-8796-8d2d1cdb0c70",
+  "integrity": {
+    "passed": false,
+    "issues": [
+      {
+        "type": "missing_checkpoint",
+        "description": "1 unverified change(s) detected between sessions. These changes were made without active telemetry tracking."
+      }
+    ]
+  },
+  "time": {
+    "total_focused_seconds": 130,
+    "total_active_seconds": 130,
+    "session_count": 3,
+    "first_session_start": "2026-01-30T19:43:14.924Z",
+    "last_session_end": "2026-01-30T21:16:04.484Z"
+  },
+  "bursts": {
+    "total_count": 0,
+    "by_severity": {
+      "low": 0,
+      "medium": 0,
+      "high": 0
+    }
+  },
+  "checkpoints": {
+    "count": 10,
+    "latest_checkpoint_id": "4cc59b35-3f69-487d-af93-da5319b952c2"
+  },
+  "unverified_changes": [
+    {
+      "path": "README.md",
+      "change_type": "modified",
+      "detected_after_checkpoint": "947f9a77-accf-4b74-915d-f22157cc37c6"
+    }
+  ]
+}

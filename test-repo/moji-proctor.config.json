@@ -1,0 +1,25 @@
+{
+  "course_id": "CS101",
+  "assignment_id": "test-assignment-0",
+  "ignore": [
+    "node_modules/**",
+    ".vscode/**",
+    "dist/**",
+    "build/**",
+    "*.log"
+  ],
+  "burst_thresholds": {
+    "low_edits_per_min": 20,
+    "medium_edits_per_min": 40,
+    "high_edits_per_min": 60,
+    "window_ms": 10000
+  },
+  "online_signals": {
+    "enabled": true,
+    "server_url": "https://moji-proctor-server.fly.dev",
+    "max_batch": 50,
+    "flush_interval_ms": 60000,
+    "max_queue": 1000,
+    "top_paths_limit": 10
+  }
+}
