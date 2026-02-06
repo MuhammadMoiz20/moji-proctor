@@ -16,7 +16,7 @@
   },
   "online_signals": {
     "enabled": true,
-    "server_url": "http://localhost:3000",
+    "server_url": "https://moji-proctor-server.fly.dev",
     "api_base_path": "/api",
     "max_batch": 50,
     "flush_interval_ms": 60000,

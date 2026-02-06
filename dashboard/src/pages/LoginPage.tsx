@@ -60,17 +60,32 @@ export default function LoginPage() {
           return
         }
 
+        const data = await response.json()
+
         if (!response.ok) {
-          throw new Error('Authentication failed')
+          // Check for specific errors that should stop polling
+          if (data.error === 'expired_token' || data.error === 'access_denied' || data.error === 'incorrect_device_code') {
+            console.error('Authentication error:', data.error)
+            setIsPolling(false)
+            setDeviceCode(null)
+            setUserCode(null)
+            alert(`Authentication failed: ${data.error}. Please try again.`)
+            return
+          }
+          // Unknown error, stop polling
+          throw new Error(data.error || 'Authentication failed')
         }
 
-        const data = await response.json()
+        // Success!
         login(data.access_token, data.refresh_token, data.user)
         setIsPolling(false)
         navigate('/')
       } catch (error) {
         console.error('Polling error:', error)
         setIsPolling(false)
+        setDeviceCode(null)
+        setUserCode(null)
+        alert('Authentication failed. Please try again.')
       }
     }
 

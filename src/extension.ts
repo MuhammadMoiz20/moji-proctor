@@ -48,7 +48,7 @@ import {
   findGitRoot,
   GitRootNotFoundError,
 } from './utils/gitRoot';
-import { readAssignmentMetadata } from './utils/assignmentLoader';
+import { getOrCreateAssignmentMetadata } from './utils/assignmentLoader';
 import { CONFIG_FILENAME, readConfig, validateOnlineSignalsConfig } from './utils/configLoader';
 import { OnlineSignalsManager, createOnlineSignalsManager } from './services/onlineSignalsManager';
 import { EventEnvelope } from './types/events';
@@ -343,8 +343,8 @@ async function initializeExtension(): Promise<void> {
   const config = await readConfig(workspaceRoot);
   currentConfig = config;
 
-  // Check for assignment metadata
-  const assignment = await readAssignmentMetadata(gitRoot);
+  // Get or create assignment metadata (auto-generates from config if missing)
+  const assignment = await getOrCreateAssignmentMetadata(gitRoot, config);
   if (!assignment) {
     setExtensionMode('disabled', 'No assignment');
     return;

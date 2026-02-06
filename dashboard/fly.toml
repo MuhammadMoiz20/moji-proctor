@@ -7,6 +7,8 @@ app = 'moji-proctor-dashboard'
 primary_region = 'iad'
 
 [build]
+  [build.args]
+    VITE_API_URL = "https://moji-proctor-server.fly.dev"
 
 [http_service]
   internal_port = 80
