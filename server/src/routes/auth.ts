@@ -41,11 +41,6 @@ interface TokenResponse {
   };
 }
 
-// Validation schemas
-const deviceStartSchema = z.object({
-  client_id: z.string().optional(),
-});
-
 const deviceCompleteSchema = z.object({
   device_code: z.string(),
 });
@@ -88,7 +83,7 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
 
     if (!githubResponse.ok) {
       const error = await githubResponse.text();
-      fastify.log.error({ status: githubResponse.status, error, clientId }, 'GitHub device flow start failed');
+      fastify.log.error({ status: githubResponse.status, error }, 'GitHub device flow start failed');
       return reply.status(500).send({ error: `GitHub API error: ${githubResponse.status}` });
     }
 
@@ -133,12 +128,17 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
       },
       body: JSON.stringify({
         client_id: clientId,
+        client_secret: clientSecret,
         device_code: device_code,
         grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
       }),
     });
 
     const githubData = await githubResponse.json();
+
+    if (!githubResponse.ok && !githubData.error) {
+      return reply.status(502).send({ error: 'GitHub token exchange failed' });
+    }
 
     // Handle pending/slow_down
     if (githubData.error === 'authorization_pending') {
@@ -161,7 +161,14 @@ export async function authRoutes(fastify: FastifyInstance): Promise<void> {
       },
     });
 
+    if (!userResponse.ok) {
+      return reply.status(502).send({ error: 'Failed to load GitHub user profile' });
+    }
+
     const githubUser = await userResponse.json();
+    if (!githubUser?.id || !githubUser?.login) {
+      return reply.status(502).send({ error: 'Invalid GitHub user profile response' });
+    }
 
     // Determine role from allowlist for new users
     const initialRole = getInitialRole(githubUser.login, String(githubUser.id));

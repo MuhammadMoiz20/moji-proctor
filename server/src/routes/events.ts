@@ -9,11 +9,7 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '../index.js';
 import { verifySignature, getNextSequenceNumber, incrementSequenceNumber } from '../services/signatures.js';
-import {
-  detectTampering,
-  updateCheckpointState,
-  createTamperFlag,
-} from '../services/tamperDetection.js';
+import { detectTampering } from '../services/tamperDetection.js';
 import {
   sessionStartPayloadSchema,
   sessionEndPayloadSchema,
@@ -96,18 +92,15 @@ export async function eventRoutes(fastify: FastifyInstance): Promise<void> {
   fastify.post('/events/batch', async (request, reply) => {
     // Verify JWT
     try {
-      const authHeader = request.headers.authorization;
-      fastify.log.info({ authHeader: authHeader ? `${authHeader.substring(0, 30)}...` : 'none' }, 'Verifying JWT');
       await request.jwtVerify();
     } catch (error) {
       const err = error as Error;
-      fastify.log.error({ 
-        errorName: err.name, 
+      fastify.log.error({
+        errorName: err.name,
         errorMessage: err.message,
         errorCode: (err as any).code,
-        stack: err.stack?.split('\n').slice(0, 3).join('\n')
       }, 'JWT verification failed');
-      return reply.status(401).send({ error: 'Unauthorized', details: err.message });
+      return reply.status(401).send({ error: 'Unauthorized' });
     }
 
     const userId = (request.user as any)?.userId;
@@ -121,7 +114,7 @@ export async function eventRoutes(fastify: FastifyInstance): Promise<void> {
     const body = batchUploadSchema.safeParse(request.body);
     if (!body.success) {
       fastify.log.error({ error: body.error }, 'Batch validation failed');
-      return reply.status(400).send({ error: 'Validation failed', details: body.error });
+      return reply.status(400).send({ error: 'Validation failed' });
     }
 
     const { signals } = body.data;
@@ -134,17 +127,13 @@ export async function eventRoutes(fastify: FastifyInstance): Promise<void> {
 
     for (const signal of signals) {
       try {
-        fastify.log.info({
+        fastify.log.debug({
           eventId: signal.event_id,
           type: signal.type,
           assignmentId: signal.assignment_id,
           seq: signal.seq,
           devicePubKey: signal.device_pubkey.substring(0, 16) + '...'
         }, 'Processing signal');
-
-        fastify.log.debug({
-          signalPayload: JSON.stringify(signal.payload).substring(0, 200)
-        }, 'Signal payload');
 
         // 1. Validate payload based on type
         const payloadSchema = payloadSchemas[signal.type];
@@ -180,11 +169,6 @@ export async function eventRoutes(fastify: FastifyInstance): Promise<void> {
           repo_identifier: signal.repo_identifier,
         };
 
-        fastify.log.debug({
-          eventId: signal.event_id,
-          payloadToVerify: JSON.stringify(payloadToVerify).substring(0, 300)
-        }, 'Verifying signature');
-
         const isValid = verifySignature(
           payloadToVerify,
           signal.sig,
@@ -192,20 +176,16 @@ export async function eventRoutes(fastify: FastifyInstance): Promise<void> {
         );
 
         if (!isValid) {
-          // Log detailed info for debugging
-          const payloadJson = JSON.stringify(payloadToVerify);
           fastify.log.error({
             eventId: signal.event_id,
             devicePubKey: signal.device_pubkey.substring(0, 16) + '...',
             signaturePrefix: signal.sig.substring(0, 32) + '...',
-            payloadLength: payloadJson.length,
-            payloadPreview: payloadJson.substring(0, 200),
-          }, 'SIGNATURE VERIFICATION FAILED');
+          }, 'Signature verification failed');
           rejected.push(signal.event_id);
           continue;
         }
-        
-        fastify.log.info({ eventId: signal.event_id }, 'Signature verified successfully');
+
+        fastify.log.debug({ eventId: signal.event_id }, 'Signature verified successfully');
 
         // 3. Get or create device AFTER signature verification
         // Device is bound to the authenticated user
@@ -266,7 +246,7 @@ export async function eventRoutes(fastify: FastifyInstance): Promise<void> {
         }
 
         if (isFirstSignal && signal.seq !== 1) {
-          fastify.log.info({
+          fastify.log.debug({
             eventId: signal.event_id,
             signalSeq: signal.seq,
           }, 'Accepting first signal with non-1 sequence (initial sync)');
@@ -313,7 +293,7 @@ export async function eventRoutes(fastify: FastifyInstance): Promise<void> {
         // 8. Store signal with sequence update in transaction
         await prisma.$transaction(async (tx) => {
           // Re-check sequence in transaction to prevent race conditions
-          const txSeq = await getNextSequenceNumber(device.id, signal.assignment_id);
+          const txSeq = await getNextSequenceNumber(device.id, signal.assignment_id, tx as any);
           const isInitialSync = txSeq === 0 && signal.seq > 1;
           if (signal.seq !== txSeq + 1 && !isInitialSync) {
             throw new Error('Sequence number mismatch in transaction');
@@ -397,11 +377,10 @@ export async function eventRoutes(fastify: FastifyInstance): Promise<void> {
         accepted.push(signal.event_id);
       } catch (error) {
         const err = error as Error;
-        fastify.log.error({ 
+        fastify.log.error({
           errorMessage: err.message,
           errorName: err.name,
-          errorStack: err.stack?.split('\n').slice(0, 5).join('\n'),
-          signalId: signal.event_id 
+          signalId: signal.event_id
         }, 'Failed to process signal');
         rejected.push(signal.event_id);
       }

@@ -9,7 +9,12 @@ import { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma } from '../index.js';
 import { requireInstructor } from '../services/authz.js';
-import { getTamperFlagsForAssignment, getTamperFlags, markTamperFlagReviewed } from '../services/tamperDetection.js';
+import { markTamperFlagReviewed } from '../services/tamperDetection.js';
+
+const timelineQuerySchema = z.object({
+  type: z.enum(['SESSION_START', 'SESSION_END', 'BURST_FLAG', 'CHECKPOINT_CREATED', 'UNVERIFIED_CHANGES', 'INTEGRITY_COMPROMISED', 'STATUS_UPDATE']).optional(),
+  limit: z.coerce.number().int().min(1).max(1000).optional(),
+});
 
 /**
  * Register instructor routes
@@ -60,103 +65,112 @@ export async function instructorRoutes(fastify: FastifyInstance): Promise<void> 
   fastify.get('/assignments/:id/students', async (request, reply) => {
     const { id } = request.params as { id: string };
 
-    // Get students (devices) with signals for this assignment
-    const students = await prisma.signal.findMany({
+    // Aggregate per-device stats in SQL for correctness and scale.
+    const signalStats = await prisma.signal.groupBy({
+      by: ['deviceId'],
       where: { assignmentId: id },
+      _count: { id: true },
+      _min: { createdAt: true },
+      _max: { createdAt: true },
+    });
+
+    if (signalStats.length === 0) {
+      return reply.send({
+        assignment_id: id,
+        students: [],
+      });
+    }
+
+    const deviceIds = signalStats.map((s) => s.deviceId);
+
+    const devices = await prisma.device.findMany({
+      where: {
+        id: { in: deviceIds },
+      },
       include: {
-        device: {
-          include: {
-            user: {
-              select: {
-                githubLogin: true,
-                githubName: true,
-                githubEmail: true,
-              },
-            },
+        user: {
+          select: {
+            githubLogin: true,
+            githubName: true,
+            githubEmail: true,
           },
         },
       },
-      orderBy: { createdAt: 'asc' },
-      distinct: ['deviceId'],
     });
 
-    // Group by device/student
-    const studentMap = new Map<string, {
-      device_id: string;
+    const sessionRows = await prisma.signal.findMany({
+      where: {
+        assignmentId: id,
+        deviceId: { in: deviceIds },
+      },
+      distinct: ['deviceId', 'sessionId'],
+      select: {
+        deviceId: true,
+      },
+    });
+
+    const sessionCountByDevice = new Map<string, number>();
+    for (const row of sessionRows) {
+      sessionCountByDevice.set(
+        row.deviceId,
+        (sessionCountByDevice.get(row.deviceId) ?? 0) + 1
+      );
+    }
+
+    const tamperCounts = await prisma.tamperFlag.groupBy({
+      by: ['deviceId'],
+      where: { assignmentId: id },
+      _count: { id: true },
+    });
+
+    const tamperCountByDevice = new Map<string, number>(
+      tamperCounts.map((row) => [row.deviceId, row._count.id])
+    );
+
+    const discontinuityRows = await prisma.deviceCheckpoint.findMany({
+      where: {
+        assignmentId: id,
+        deviceId: { in: deviceIds },
+        hasDiscontinuity: true,
+      },
+      select: {
+        deviceId: true,
+      },
+    });
+
+    const discontinuitySet = new Set(discontinuityRows.map((row) => row.deviceId));
+    const userByDevice = new Map<string, {
       user: { login: string; name?: string; email?: string } | null;
-      first_seen: Date;
-      last_seen: Date;
-      signal_count: number;
-      sessions: string[];
-      tamper_flag_count: number;
-      has_discontinuity: boolean;
     }>();
 
-    for (const signal of students) {
-      const existing = studentMap.get(signal.deviceId);
-      if (existing) {
-        existing.last_seen = signal.createdAt;
-        existing.signal_count++;
-        if (!existing.sessions.includes(signal.sessionId)) {
-          existing.sessions.push(signal.sessionId);
-        }
-      } else {
-        studentMap.set(signal.deviceId, {
-          device_id: signal.deviceId,
-          user: signal.device.user ? {
-            login: signal.device.user.githubLogin,
-            name: signal.device.user.githubName ?? undefined,
-            email: signal.device.user.githubEmail ?? undefined,
-          } : null,
-          first_seen: signal.createdAt,
-          last_seen: signal.createdAt,
-          signal_count: 1,
-          sessions: [signal.sessionId],
-          tamper_flag_count: 0,
-          has_discontinuity: false,
-        });
-      }
+    for (const device of devices) {
+      userByDevice.set(device.id, {
+        user: device.user ? {
+          login: device.user.githubLogin,
+          name: device.user.githubName ?? undefined,
+          email: device.user.githubEmail ?? undefined,
+        } : null,
+      });
     }
 
-    // Get tamper flags for all students in this assignment
-    const tamperFlags = await prisma.tamperFlag.findMany({
-      where: { assignmentId: id },
-    });
-
-    // Get device checkpoint states for discontinuity info
-    const deviceCheckpoints = await prisma.deviceCheckpoint.findMany({
-      where: { assignmentId: id },
-    });
-
-    // Add tamper flag counts and discontinuity info to students
-    for (const flag of tamperFlags) {
-      const student = studentMap.get(flag.deviceId);
-      if (student) {
-        student.tamper_flag_count++;
-      }
-    }
-
-    for (const checkpoint of deviceCheckpoints) {
-      const student = studentMap.get(checkpoint.deviceId);
-      if (student && checkpoint.hasDiscontinuity) {
-        student.has_discontinuity = true;
-      }
-    }
+    const students = signalStats
+      .map((stat) => ({
+        device_id: stat.deviceId,
+        user: userByDevice.get(stat.deviceId)?.user ?? null,
+        first_seen: stat._min.createdAt ?? stat._max.createdAt ?? new Date(0),
+        last_seen: stat._max.createdAt ?? stat._min.createdAt ?? new Date(0),
+        signal_count: stat._count.id,
+        session_count: sessionCountByDevice.get(stat.deviceId) ?? 0,
+        integrity: {
+          tamper_flag_count: tamperCountByDevice.get(stat.deviceId) ?? 0,
+          has_discontinuity: discontinuitySet.has(stat.deviceId),
+        },
+      }))
+      .sort((a, b) => a.first_seen.getTime() - b.first_seen.getTime());
 
     return reply.send({
       assignment_id: id,
-      students: Array.from(studentMap.values()).map((s) => ({
-        device_id: s.device_id,
-        user: s.user,
-        first_seen: s.first_seen,
-        last_seen: s.last_seen,
-        signal_count: s.signal_count,
-        session_count: s.sessions.length,
-        integrity: {
-          tamper_flag_count: s.tamper_flag_count,
-          has_discontinuity: s.has_discontinuity,
-        },
-      })),
+      students,
     });
   });
 
@@ -167,17 +181,20 @@ export async function instructorRoutes(fastify: FastifyInstance): Promise<void> 
    */
   fastify.get('/assignments/:id/students/:studentId/timeline', async (request, reply) => {
     const { id, studentId } = request.params as { id: string; studentId: string };
-    const query = request.query as { type?: string; limit?: string };
+    const parsedQuery = timelineQuerySchema.safeParse(request.query);
+    if (!parsedQuery.success) {
+      return reply.status(400).send({ error: 'Invalid query parameters' });
+    }
 
-    const limit = query.limit ? parseInt(query.limit, 10) : 100;
+    const { type, limit = 100 } = parsedQuery.data;
 
     const where: any = {
       assignmentId: id,
       deviceId: studentId,
     };
 
-    if (query.type) {
-      where.type = query.type;
+    if (type) {
+      where.type = type;
     }
 
     const signals = await prisma.signal.findMany({

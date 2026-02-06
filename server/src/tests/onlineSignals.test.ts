@@ -81,36 +81,44 @@ describe('Online Signals - Smoke Tests', () => {
 
     server = await build();
 
-    vi.spyOn(prisma.user, 'upsert').mockResolvedValue({
-      id: 'user-1',
-      githubId: '1',
-      githubLogin: 'octo',
-      githubName: 'Octo',
-      githubEmail: 'octo@example.com',
-      role: 'student',
-    } as any);
+    (prisma as any).user = {
+      upsert: vi.fn().mockResolvedValue({
+        id: 'user-1',
+        githubId: '1',
+        githubLogin: 'octo',
+        githubName: 'Octo',
+        githubEmail: 'octo@example.com',
+        role: 'student',
+      }),
+    };
 
-    vi.spyOn(prisma.refreshToken, 'create').mockResolvedValue({ id: 'rt-1' } as any);
-    vi.spyOn(prisma.refreshToken, 'findMany').mockResolvedValue([]);
-    vi.spyOn(prisma.refreshToken, 'deleteMany').mockResolvedValue({ count: 1 } as any);
-    vi.spyOn(prisma.refreshToken, 'findUnique').mockResolvedValue({
-      id: 'rt-1',
-      userId: 'user-1',
-      token: 'refresh-token',
-      expiresAt: new Date(Date.now() + 1000 * 60 * 60),
-      revokedAt: null,
-    } as any);
-    vi.spyOn(prisma.refreshToken, 'delete').mockResolvedValue({} as any);
+    (prisma as any).refreshToken = {
+      create: vi.fn().mockResolvedValue({ id: 'rt-1' }),
+      findMany: vi.fn().mockResolvedValue([]),
+      deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+      findUnique: vi.fn().mockResolvedValue({
+        id: 'rt-1',
+        userId: 'user-1',
+        token: 'refresh-token',
+        expiresAt: new Date(Date.now() + 1000 * 60 * 60),
+        revokedAt: null,
+      }),
+      delete: vi.fn().mockResolvedValue({}),
+    };
 
-    vi.spyOn(prisma.device, 'upsert').mockResolvedValue({
-      id: 'device-1',
-      userId: 'user-1',
-      publicKey: 'a'.repeat(64),
-    } as any);
+    (prisma as any).device = {
+      upsert: vi.fn().mockResolvedValue({
+        id: 'device-1',
+        userId: 'user-1',
+        publicKey: 'a'.repeat(64),
+      }),
+    };
 
-    vi.spyOn(prisma.signal, 'findUnique').mockResolvedValue(null as any);
+    (prisma as any).signal = {
+      findUnique: vi.fn().mockResolvedValue(null),
+    };
 
-    vi.spyOn(prisma, '$transaction').mockImplementation(async (fn: any) => {
+    (prisma as any).$transaction = vi.fn().mockImplementation(async (fn: any) => {
       const tx = {
         signal: { create: vi.fn().mockResolvedValue({}) },
         deviceCheckpoint: { upsert: vi.fn().mockResolvedValue({}) },

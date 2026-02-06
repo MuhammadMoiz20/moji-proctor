@@ -124,19 +124,25 @@ export async function createServer(): Promise<FastifyInstance> {
 
   // Global error handler
   server.setErrorHandler((error, request, reply) => {
+    const appError = error as {
+      validation?: unknown;
+      statusCode?: number;
+      message?: string;
+    };
     request.log.error(error);
+    const isProduction = process.env.NODE_ENV === 'production';
 
     // Handle validation errors
-    if (error.validation) {
+    if (appError.validation) {
       reply.status(400).send({
         error: 'Validation Error',
-        details: error.validation,
+        ...(isProduction ? {} : { details: appError.validation }),
       });
       return;
     }
 
     // Handle rate limit errors
-    if (error.statusCode === 429) {
+    if (appError.statusCode === 429) {
       reply.status(429).send({
         error: 'Too Many Requests',
         retryAfter: '60s',
@@ -144,10 +150,12 @@ export async function createServer(): Promise<FastifyInstance> {
       return;
     }
 
-    // Generic error
-    reply.status(error.statusCode ?? 500).send({
-      error: error.message ?? 'Internal Server Error',
-    });
+    const statusCode = appError.statusCode ?? 500;
+    const message = statusCode >= 500
+      ? 'Internal Server Error'
+      : (appError.message || 'Request failed');
+
+    reply.status(statusCode).send({ error: message });
   });
 
   // 404 handler
