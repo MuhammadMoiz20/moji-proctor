@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { build } from './helper';
+import { build } from './helper.js';
 
 describe('Security - Auth Token Rotation', () => {
   // Test that refresh tokens rotate properly

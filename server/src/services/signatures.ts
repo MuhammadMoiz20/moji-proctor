@@ -7,6 +7,7 @@
 
 import * as crypto from 'crypto';
 import { PrismaClient } from '@prisma/client';
+import { prisma } from '../prisma.js';
 
 /**
  * Canonical JSON stringify (must match client implementation)
@@ -58,10 +59,7 @@ export function verifySignature(
 ): boolean {
   try {
     const canonicalPayload = canonicalStringify(payload);
-    console.log('[Signatures] Verifying signature for payload:', canonicalPayload.substring(0, 200) + '...');
-    console.log('[Signatures] Public key:', publicKeyHex.substring(0, 20) + '...');
-    console.log('[Signatures] Signature:', signatureHex.substring(0, 40) + '...');
-    
+
     const message = Buffer.from(canonicalPayload, 'utf8');
     const signature = Buffer.from(signatureHex, 'hex');
     const publicKeyRaw = Buffer.from(publicKeyHex, 'hex');
@@ -99,9 +97,10 @@ export function verifySignature(
  */
 export async function getNextSequenceNumber(
   deviceId: string,
-  assignmentId: string
+  assignmentId: string,
+  dbClient: Pick<PrismaClient, 'deviceSequence'> = prisma
 ): Promise<number> {
-  const seq = await prisma.deviceSequence.findUnique({
+  const seq = await dbClient.deviceSequence.findUnique({
     where: {
       deviceId_assignmentId: {
         deviceId,
@@ -142,6 +141,3 @@ export async function incrementSequenceNumber(
     },
   });
 }
-
-// Prisma client for signature service
-const prisma = new PrismaClient();

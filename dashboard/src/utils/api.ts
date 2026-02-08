@@ -1,4 +1,5 @@
 import { useAuth } from '../contexts/AuthContext'
+import { apiUrl } from '../config/api'
 
 export async function fetchWithAuth(
   url: string,
@@ -24,7 +25,7 @@ export async function fetchWithAuth(
     const refreshToken = localStorage.getItem('refreshToken')
     if (refreshToken) {
       try {
-        const refreshResponse = await fetch('/api/auth/refresh', {
+        const refreshResponse = await fetch(apiUrl('api/auth/refresh'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ refresh_token: refreshToken }),

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { Github, Copy, Check, ShieldCheck, Activity, Zap } from 'lucide-react'
+import { apiUrl } from '../config/api'
 
 export default function LoginPage() {
   const [deviceCode, setDeviceCode] = useState<string | null>(null)
@@ -20,7 +21,7 @@ export default function LoginPage() {
 
   const startDeviceFlow = async () => {
     try {
-      const response = await fetch('/api/auth/device/start', {
+      const response = await fetch(apiUrl('/api/auth/device/start'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
@@ -47,7 +48,7 @@ export default function LoginPage() {
   const pollForAuth = async (code: string, interval: number) => {
     const poll = async () => {
       try {
-        const response = await fetch('/api/auth/device/complete', {
+        const response = await fetch(apiUrl('/api/auth/device/complete'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ device_code: code }),
@@ -59,17 +60,32 @@ export default function LoginPage() {
           return
         }
 
+        const data = await response.json()
+
         if (!response.ok) {
-          throw new Error('Authentication failed')
+          // Check for specific errors that should stop polling
+          if (data.error === 'expired_token' || data.error === 'access_denied' || data.error === 'incorrect_device_code') {
+            console.error('Authentication error:', data.error)
+            setIsPolling(false)
+            setDeviceCode(null)
+            setUserCode(null)
+            alert(`Authentication failed: ${data.error}. Please try again.`)
+            return
+          }
+          // Unknown error, stop polling
+          throw new Error(data.error || 'Authentication failed')
         }
 
-        const data = await response.json()
+        // Success!
         login(data.access_token, data.refresh_token, data.user)
         setIsPolling(false)
         navigate('/')
       } catch (error) {
         console.error('Polling error:', error)
         setIsPolling(false)
+        setDeviceCode(null)
+        setUserCode(null)
+        alert('Authentication failed. Please try again.')
       }
     }
 

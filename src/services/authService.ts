@@ -6,8 +6,8 @@
  */
 
 import * as vscode from 'vscode';
-import * as crypto from 'crypto';
-import { httpClient, HttpError, TimeoutError } from '../utils/httpClient';
+import { httpClient } from '../utils/httpClient';
+import { buildApiUrl } from '../utils/apiUrl';
 
 /**
  * Storage keys - using SecretStorage for sensitive data
@@ -87,7 +87,8 @@ export class AuthService {
 
   constructor(
     private readonly context: vscode.ExtensionContext,
-    private readonly serverUrl: string
+    private readonly serverUrl: string,
+    private readonly apiBasePath?: string
   ) {
     this.loadTokens();
     this.startTokenRefreshTimer();
@@ -98,25 +99,13 @@ export class AuthService {
    */
   async getStatus(): Promise<AuthStatus> {
     const accessToken = await this.context.secrets.get(ACCESS_TOKEN_KEY);
+    const refreshToken = await this.context.secrets.get(REFRESH_TOKEN_KEY);
     const expiresAt = this.context.globalState.get<number>(TOKEN_EXPIRES_AT_KEY, 0);
     const user = this.context.globalState.get<UserInfo | undefined>(USER_INFO_KEY);
 
     const now = Date.now();
     const authenticated = !!accessToken && now < expiresAt;
-    const needsRefresh = authenticated && now >= expiresAt - 5 * 60 * 1000; // 5 min before expiry
-
-    // Debug logging for auth status
-    if (accessToken) {
-      const timeUntilExpiry = Math.round((expiresAt - now) / 1000);
-      console.log('[AuthService] Status check:', {
-        hasToken: true,
-        tokenLength: accessToken.length,
-        expiresAt: new Date(expiresAt).toISOString(),
-        timeUntilExpirySec: timeUntilExpiry,
-        authenticated,
-        needsRefresh,
-      });
-    }
+    const needsRefresh = !!refreshToken && (!accessToken || now >= expiresAt - 5 * 60 * 1000);
 
     return {
       authenticated,
@@ -131,36 +120,21 @@ export class AuthService {
    * @returns Access token or null if not authenticated
    */
   async getAccessToken(): Promise<string | null> {
-    const status = await this.getStatus();
-    console.log('[AuthService] getAccessToken status:', { 
-      authenticated: status.authenticated, 
-      needsRefresh: status.needsRefresh,
-      user: status.user?.login 
-    });
-
+    const status = await this.ensureValidSession();
     if (!status.authenticated) {
-      console.log('[AuthService] Not authenticated, returning null');
       return null;
-    }
-
-    if (status.needsRefresh) {
-      console.log('[AuthService] Token needs refresh, refreshing...');
-      try {
-        await this.refreshAccessToken();
-        console.log('[AuthService] Token refreshed successfully');
-      } catch (error) {
-        console.error('[AuthService] Token refresh failed:', error);
-        return null;
-      }
     }
 
     const token = await this.context.secrets.get(ACCESS_TOKEN_KEY);
     if (!token) {
-      console.error('[AuthService] Token is null/undefined after status check!');
       return null;
     }
-    
-    console.log('[AuthService] Returning token, length:', token.length);
+
+    const expiresAt = this.context.globalState.get<number>(TOKEN_EXPIRES_AT_KEY, 0);
+    if (Date.now() >= expiresAt) {
+      return null;
+    }
+
     return token;
   }
 
@@ -215,7 +189,7 @@ export class AuthService {
     // Try to revoke on server (best effort)
     if (refreshToken) {
       try {
-        await httpClient(`${this.serverUrl}/api/auth/logout`, {
+        await httpClient(this.getApiUrl('/auth/logout'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ refresh_token: refreshToken }),
@@ -246,7 +220,7 @@ export class AuthService {
     }
 
     try {
-      const response = await httpClient(`${this.serverUrl}/api/auth/refresh`, {
+      const response = await httpClient(this.getApiUrl('/auth/refresh'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ refresh_token: refreshToken }),
@@ -266,7 +240,7 @@ export class AuthService {
    * Start the GitHub Device Flow
    */
   private async startDeviceFlow(): Promise<DeviceFlowStartResponse> {
-    const response = await httpClient(`${this.serverUrl}/api/auth/device/start`, {
+    const response = await httpClient(this.getApiUrl('/auth/device/start'), {
       method: 'POST',
       timeout: 10000,
     });
@@ -289,7 +263,7 @@ export class AuthService {
     const interval = deviceFlow.interval * 1000;
 
     while (Date.now() < expiresAt) {
-      const response = await httpClient(`${this.serverUrl}/api/auth/device/complete`, {
+      const response = await httpClient(this.getApiUrl('/auth/device/complete'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ device_code: deviceFlow.device_code }),
@@ -383,7 +357,7 @@ Your code is: ${deviceFlow.user_code}
   private startTokenRefreshTimer(): void {
     this.tokenRefreshTimer = setInterval(async () => {
       const status = await this.getStatus();
-      if (status.authenticated && status.needsRefresh) {
+      if (status.needsRefresh) {
         try {
           await this.refreshAccessToken();
         } catch {
@@ -418,6 +392,28 @@ Your code is: ${deviceFlow.user_code}
   dispose(): void {
     this.stopTokenRefreshTimer();
   }
+
+  /**
+   * Ensure we have a valid access token (refresh if needed)
+   */
+  async ensureValidSession(): Promise<AuthStatus> {
+    const status = await this.getStatus();
+    if (status.needsRefresh) {
+      try {
+        await this.refreshAccessToken();
+      } catch {
+        return this.getStatus();
+      }
+    }
+    return this.getStatus();
+  }
+
+  /**
+   * Build API URL for auth endpoints
+   */
+  private getApiUrl(path: string): string {
+    return buildApiUrl(this.serverUrl, this.apiBasePath, path);
+  }
 }
 
 /**
@@ -429,7 +425,8 @@ Your code is: ${deviceFlow.user_code}
  */
 export function createAuthService(
   context: vscode.ExtensionContext,
-  serverUrl: string
+  serverUrl: string,
+  apiBasePath?: string
 ): AuthService {
-  return new AuthService(context, serverUrl);
+  return new AuthService(context, serverUrl, apiBasePath);
 }

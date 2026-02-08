@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { getStudentTimeline, getStudentReport, Signal, StudentReport } from '../services/api'
 import {
@@ -13,7 +13,6 @@ import {
   Clock,
   Zap,
   FileCheck,
-  AlertTriangle,
   Copy,
   Check,
   Download,
@@ -51,13 +50,7 @@ export default function StudentDetailPage() {
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc')
   const [copied, setCopied] = useState(false)
 
-  useEffect(() => {
-    if (assignmentId && studentId) {
-      loadData()
-    }
-  }, [assignmentId, studentId])
-
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     if (!assignmentId || !studentId) return
 
     try {
@@ -77,7 +70,13 @@ export default function StudentDetailPage() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [assignmentId, studentId])
+
+  useEffect(() => {
+    if (assignmentId && studentId) {
+      loadData()
+    }
+  }, [assignmentId, studentId, loadData])
 
   const handleCopy = () => {
     if (!studentId) return
@@ -420,7 +419,7 @@ export default function StudentDetailPage() {
         <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6 space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-semibold text-white">Unverified Changes</h2>
-            <AlertTriangle className="h-5 w-5 text-amber-300" />
+            <span className="text-xl">😲</span>
           </div>
           <div className="text-3xl font-display font-semibold text-white">
             {report?.unverified_changes ?? 0}
@@ -589,7 +588,7 @@ export default function StudentDetailPage() {
                       <Calendar className="h-4 w-4" />
                       <span>{format(parseISO(signal.ts), 'PPpp')}</span>
                     </div>
-                    {signal.payload && (
+                    {signal.payload && typeof signal.payload === 'object' ? (
                       <div className="mt-2">
                         <details className="text-sm">
                           <summary className="cursor-pointer text-slate-400 hover:text-white">
@@ -600,7 +599,7 @@ export default function StudentDetailPage() {
                           </pre>
                         </details>
                       </div>
-                    )}
+                    ) : null}
                   </div>
                 </div>
               </div>

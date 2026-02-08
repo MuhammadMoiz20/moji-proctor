@@ -31,7 +31,7 @@ export async function readConfig(workspaceRoot: string): Promise<MojiProctorConf
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       // Config file not found - return defaults (local-only mode)
-      return { online_signals: { enabled: false, server_url: '' } };
+      return { online_signals: { ...DEFAULT_CONFIG.online_signals, enabled: false, server_url: '' } };
     }
     throw error;
   }
@@ -57,6 +57,7 @@ function mergeWithDefaults(config: MojiProctorConfig): MojiProctorConfig {
   // Merge online_signals with defaults
   if (config.online_signals) {
     merged.online_signals = {
+      api_base_path: DEFAULT_CONFIG.online_signals.api_base_path,
       max_batch: DEFAULT_CONFIG.online_signals.max_batch,
       flush_interval_ms: DEFAULT_CONFIG.online_signals.flush_interval_ms,
       max_queue: DEFAULT_CONFIG.online_signals.max_queue,
@@ -86,7 +87,7 @@ export function validateOnlineSignalsConfig(
     return { valid: true };
   }
 
-  const { server_url } = config.online_signals;
+  const { server_url, api_base_path } = config.online_signals;
 
   if (!server_url || typeof server_url !== 'string') {
     return { valid: false, error: 'online_signals.server_url is required when enabled' };
@@ -99,6 +100,10 @@ export function validateOnlineSignalsConfig(
     }
   } catch {
     return { valid: false, error: 'server_url must be a valid URL' };
+  }
+
+  if (api_base_path !== undefined && typeof api_base_path !== 'string') {
+    return { valid: false, error: 'online_signals.api_base_path must be a string if provided' };
   }
 
   return { valid: true };

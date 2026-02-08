@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
+import { apiUrl } from '../config/api'
 
 interface User {
   id: string
@@ -52,7 +53,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = async () => {
     if (refreshToken) {
       try {
-        await fetch('/api/auth/logout', {
+        await fetch(apiUrl('api/auth/logout'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ refresh_token: refreshToken }),
@@ -73,7 +74,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!refreshToken) return
 
     try {
-      const response = await fetch('/api/auth/refresh', {
+      const response = await fetch(apiUrl('api/auth/refresh'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ refresh_token: refreshToken }),

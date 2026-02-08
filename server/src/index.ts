@@ -12,23 +12,31 @@ import Fastify, { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
 import rateLimit from '@fastify/rate-limit';
-import { PrismaClient } from '@prisma/client';
-import { authRoutes } from './routes/auth';
-import { eventRoutes } from './routes/events';
-import { instructorRoutes } from './routes/instructor';
-import { healthRoutes } from './routes/health';
+import { disconnectPrisma } from './prisma.js';
+import { authRoutes } from './routes/auth.js';
+import { eventRoutes } from './routes/events.js';
+import { instructorRoutes } from './routes/instructor.js';
+import { healthRoutes } from './routes/health.js';
 
-export const prisma = new PrismaClient();
+export { prisma } from './prisma.js';
 
 /**
  * Validate required environment variables
  */
 function validateEnv(): void {
-  const required = ['DATABASE_URL', 'JWT_SECRET', 'GITHUB_CLIENT_ID', 'GITHUB_CLIENT_SECRET'];
+  const required = ['DATABASE_URL', 'JWT_SECRET'];
   const missing = required.filter(key => !process.env[key]);
 
   if (missing.length > 0) {
     throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
+  }
+
+  const optional = ['GITHUB_CLIENT_ID', 'GITHUB_CLIENT_SECRET'];
+  const missingOptional = optional.filter(key => !process.env[key]);
+  if (missingOptional.length > 0) {
+    console.warn(
+      `Missing optional environment variables (auth endpoints will fail): ${missingOptional.join(', ')}`
+    );
   }
 
   // Warn if JWT_SECRET is default-like
@@ -41,7 +49,7 @@ function validateEnv(): void {
   const corsOrigin = process.env.CORS_ORIGIN;
   const nodeEnv = process.env.NODE_ENV;
   if (nodeEnv === 'production' && (!corsOrigin || corsOrigin === '*')) {
-    throw new Error('CORS_ORIGIN must be explicitly set in production (no wildcard allowed)');
+    console.warn('CORS_ORIGIN is not explicitly set for production; CORS will be disabled.');
   }
 }
 
@@ -116,19 +124,25 @@ export async function createServer(): Promise<FastifyInstance> {
 
   // Global error handler
   server.setErrorHandler((error, request, reply) => {
+    const appError = error as {
+      validation?: unknown;
+      statusCode?: number;
+      message?: string;
+    };
     request.log.error(error);
+    const isProduction = process.env.NODE_ENV === 'production';
 
     // Handle validation errors
-    if (error.validation) {
+    if (appError.validation) {
       reply.status(400).send({
         error: 'Validation Error',
-        details: error.validation,
+        ...(isProduction ? {} : { details: appError.validation }),
       });
       return;
     }
 
     // Handle rate limit errors
-    if (error.statusCode === 429) {
+    if (appError.statusCode === 429) {
       reply.status(429).send({
         error: 'Too Many Requests',
         retryAfter: '60s',
@@ -136,10 +150,12 @@ export async function createServer(): Promise<FastifyInstance> {
       return;
     }
 
-    // Generic error
-    reply.status(error.statusCode ?? 500).send({
-      error: error.message ?? 'Internal Server Error',
-    });
+    const statusCode = appError.statusCode ?? 500;
+    const message = statusCode >= 500
+      ? 'Internal Server Error'
+      : (appError.message || 'Request failed');
+
+    reply.status(statusCode).send({ error: message });
   });
 
   // 404 handler
@@ -154,7 +170,7 @@ export async function createServer(): Promise<FastifyInstance> {
   const gracefulShutdown = async () => {
     server.log.info('Shutting down gracefully...');
     await server.close();
-    await prisma.$disconnect();
+    await disconnectPrisma();
     process.exit(0);
   };
 

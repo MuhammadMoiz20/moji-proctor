@@ -5,7 +5,7 @@
  */
 
 import { FastifyInstance } from 'fastify';
-import { createServer } from '../index';
+import { createServer } from '../index.js';
 
 let server: FastifyInstance | null = null;
 

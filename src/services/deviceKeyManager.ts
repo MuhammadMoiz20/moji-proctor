@@ -191,6 +191,7 @@ export function verifySignature(
 export class DeviceKeyManager {
   private keyPair: Ed25519KeyPair | null = null;
   private sequenceNumbers: Map<string, number> = new Map();
+  private sequenceLocks: Map<string, Promise<void>> = new Map();
 
   constructor(
     private readonly secretStorage: {
@@ -266,12 +267,9 @@ export class DeviceKeyManager {
 
     // Create the message to sign: canonical JSON of payload
     const message = canonicalStringify(payload);
-    console.log('[DeviceKeyManager] Signing payload:', message.substring(0, 200) + '...');
-    console.log('[DeviceKeyManager] Seq:', seq, 'Assignment:', assignmentId);
 
     // Sign using Ed25519
     const signature = signEd25519(message, this.keyPair.privateKey);
-    console.log('[DeviceKeyManager] Signature:', signature.substring(0, 40) + '...');
 
     return {
       device_pubkey: this.getPublicKey(),
@@ -332,16 +330,41 @@ export class DeviceKeyManager {
    * @returns Next sequence number to use
    */
   private async getNextSequenceNumber(assignmentId: string): Promise<number> {
-    const currentSeq = await this.getSequenceNumber(assignmentId);
-    const nextSeq = currentSeq + 1;
+    return this.withSequenceLock(assignmentId, async () => {
+      const currentSeq = await this.getSequenceNumber(assignmentId);
+      const nextSeq = currentSeq + 1;
 
-    this.sequenceNumbers.set(assignmentId, nextSeq);
+      this.sequenceNumbers.set(assignmentId, nextSeq);
 
-    // Persist to storage
-    const storageKey = DEVICE_SEQ_KEY_PREFIX + assignmentId;
-    await this.secretStorage.store(storageKey, nextSeq.toString());
+      // Persist to storage
+      const storageKey = DEVICE_SEQ_KEY_PREFIX + assignmentId;
+      await this.secretStorage.store(storageKey, nextSeq.toString());
 
-    return nextSeq;
+      return nextSeq;
+    });
+  }
+
+  /**
+   * Serialize sequence updates per assignment to avoid concurrent increments.
+   */
+  private async withSequenceLock<T>(assignmentId: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.sequenceLocks.get(assignmentId) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const chain = previous.then(() => current);
+    this.sequenceLocks.set(assignmentId, chain);
+
+    await previous;
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (this.sequenceLocks.get(assignmentId) === chain) {
+        this.sequenceLocks.delete(assignmentId);
+      }
+    }
   }
 }
 

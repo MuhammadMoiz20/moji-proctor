@@ -20,7 +20,7 @@ import { SignalBatcher, createDefaultBatcherOptions } from './signalBatcher';
 import { readAssignmentMetadata } from '../utils/assignmentLoader';
 import { findGitRoot } from '../utils/gitRoot';
 import { execSync } from 'child_process';
-import { httpClient, HttpError } from '../utils/httpClient';
+import { httpClient } from '../utils/httpClient';
 import { generateId } from '../utils/hash';
 
 /**
@@ -48,11 +48,19 @@ export class OnlineSignalsManager {
   private isStarted: boolean = false;
   private _isOnline: boolean = true;
   private networkCheckTimer: NodeJS.Timeout | null = null;
+  private readonly statusEmitter = new vscode.EventEmitter<void>();
+  readonly onDidChangeStatus = this.statusEmitter.event;
+  private lastUploadAt: string | null = null;
+  private lastFlushAt: string | null = null;
+  private lastError: string | null = null;
+  private lastErrorAt: string | null = null;
+  private lastDropReason: string | null = null;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly workspaceRoot: string,
-    private readonly config: OnlineSignalsConfig
+    private readonly config: OnlineSignalsConfig,
+    private readonly outputChannel?: vscode.OutputChannel
   ) {
     // Initialize services - wrap VS Code SecretStorage to match expected interface
     const secretStorage = {
@@ -62,7 +70,7 @@ export class OnlineSignalsManager {
     };
 
     this.deviceKeyManager = new DeviceKeyManager(secretStorage);
-    this.authService = createAuthService(context, config.server_url);
+    this.authService = createAuthService(context, config.server_url, config.api_base_path);
     this.signalConverter = createSignalConverter(config);
 
     // Monitor network status
@@ -105,7 +113,7 @@ export class OnlineSignalsManager {
     this.signalContext = await this.buildSignalContext(gitRoot, assignment.assignment_id);
 
     // Check authentication (async now)
-    const authStatus = await this.authService.getStatus();
+    const authStatus = await this.authService.ensureValidSession();
     if (!authStatus.authenticated) {
       // Not authenticated - signal batcher will be paused
       vscode.window.showInformationMessage(
@@ -130,7 +138,11 @@ export class OnlineSignalsManager {
 
     // Listen for batcher events
     this.signalBatcher.on('uploadFailed', (data: { error: string; retryCount: number }) => {
-      console.error('Signal upload failed:', data.error, 'retry:', data.retryCount);
+      this.lastError = data.error;
+      this.lastErrorAt = new Date().toISOString();
+      this.lastFlushAt = this.lastErrorAt;
+      this.statusEmitter.fire();
+      this.log(`Upload failed (retry ${data.retryCount}): ${data.error}`);
       if (data.retryCount >= 3) {
         vscode.window.showWarningMessage(
           `Moji Proctor: Signal upload failing (${data.error}). Will retry automatically.`
@@ -139,14 +151,18 @@ export class OnlineSignalsManager {
     });
 
     this.signalBatcher.on('authError', async (data: { status: number; message: string }) => {
-      console.error('Signal upload auth error:', data.status, data.message);
+      this.lastError = `${data.status}: ${data.message}`;
+      this.lastErrorAt = new Date().toISOString();
+      this.lastFlushAt = this.lastErrorAt;
+      this.statusEmitter.fire();
+      this.log(`Auth error ${data.status}: ${data.message}`);
       
       // Clear the invalid tokens so we don't keep trying with them
       // This forces a fresh sign-in
       try {
         await this.authService.signOut();
       } catch (e) {
-        console.error('Failed to sign out after auth error:', e);
+        this.log(`Failed to sign out after auth error: ${e instanceof Error ? e.message : String(e)}`);
       }
       
       vscode.window.showErrorMessage(
@@ -160,12 +176,33 @@ export class OnlineSignalsManager {
     });
 
     this.signalBatcher.on('uploaded', (data: { uploaded: number; rejected: number; remaining: number }) => {
+      this.lastFlushAt = new Date().toISOString();
       if (data.uploaded > 0) {
-        console.log(`Uploaded ${data.uploaded} signals, ${data.remaining} remaining`);
+        this.lastUploadAt = this.lastFlushAt;
+      }
+      this.lastError = null;
+      this.lastErrorAt = null;
+      this.statusEmitter.fire();
+      if (data.uploaded > 0) {
+        this.log(`Uploaded ${data.uploaded} signals (${data.remaining} remaining)`);
       }
     });
 
-    this.signalBatcher.start(this.signalContext.assignmentId);
+    this.signalBatcher.on('queueChanged', () => {
+      this.statusEmitter.fire();
+    });
+
+    this.signalBatcher.on('dropped', (data: { reason: string; count?: number }) => {
+      this.lastDropReason = data.reason;
+      this.statusEmitter.fire();
+      if (data.reason === 'queue_full') {
+        vscode.window.showWarningMessage('Moji Proctor: Signal queue is full. Dropping oldest signals (metadata only).');
+      }
+      const detail = data.count ? ` (${data.count})` : '';
+      this.log(`Dropped signals due to ${data.reason}${detail}`);
+    });
+
+    await this.signalBatcher.start(this.signalContext.assignmentId);
 
     // Resume or pause based on authentication status
     if (authStatus.authenticated) {
@@ -175,10 +212,8 @@ export class OnlineSignalsManager {
       this.signalBatcher.pause();
     }
 
-    // Register event handlers
-    this.registerEventHandlers();
-
     this.isStarted = true;
+    this.statusEmitter.fire();
   }
 
   /**
@@ -194,6 +229,7 @@ export class OnlineSignalsManager {
     }
 
     this.isStarted = false;
+    this.statusEmitter.fire();
   }
 
   /**
@@ -284,15 +320,15 @@ export class OnlineSignalsManager {
 
           if (this.signalBatcher) {
             // Force resume - clear any paused state from previous auth errors
-            console.log('[OnlineSignalsManager] Sign-in successful, resuming batcher');
             this.signalBatcher.resume();
             // Force an immediate flush to test connection
             this.signalBatcher.flush().catch(err => {
-              console.error('[OnlineSignalsManager] Initial flush after sign-in failed:', err);
+              this.log(`Initial flush after sign-in failed: ${err instanceof Error ? err.message : String(err)}`);
             });
           }
 
           vscode.window.showInformationMessage(`Signed in as ${user.login}. Signals will now upload.`);
+          this.statusEmitter.fire();
         }
       );
     } catch (error) {
@@ -307,13 +343,12 @@ export class OnlineSignalsManager {
    */
   async forceResume(): Promise<void> {
     if (this.signalBatcher) {
-      console.log('[OnlineSignalsManager] Force resuming batcher');
       this.signalBatcher.resume();
       const result = await this.signalBatcher.flushAll({ force: true });
-      console.log('[OnlineSignalsManager] Force flush result:', result);
+      this.log(`Force flush result: uploaded=${result.uploaded} rejected=${result.rejected} remaining=${result.remaining}`);
       return;
     }
-    console.log('[OnlineSignalsManager] No batcher to resume');
+    this.log('No batcher to resume');
   }
 
   /**
@@ -325,6 +360,7 @@ export class OnlineSignalsManager {
       this.signalBatcher.pause();
     }
     vscode.window.showInformationMessage('Signed out from Moji Proctor');
+    this.statusEmitter.fire();
   }
 
   /**
@@ -348,6 +384,27 @@ export class OnlineSignalsManager {
       queueSize: this.signalBatcher.getQueueSize(),
       isPaused: this.signalBatcher.isPaused(),
       pauseReason: this.signalBatcher.getPauseReason(),
+      isBackoffActive: this.signalBatcher.isBackoffActive(),
+      isUploading: this.signalBatcher.isUploadInProgress(),
+      lastUploadAt: this.lastUploadAt,
+      lastFlushAt: this.lastFlushAt,
+      lastError: this.lastError,
+      lastErrorAt: this.lastErrorAt,
+      lastDropReason: this.lastDropReason,
+    };
+  }
+
+  getLastStatusInfo(): {
+    lastUploadAt: string | null;
+    lastFlushAt: string | null;
+    lastError: string | null;
+    lastErrorAt: string | null;
+  } {
+    return {
+      lastUploadAt: this.lastUploadAt,
+      lastFlushAt: this.lastFlushAt,
+      lastError: this.lastError,
+      lastErrorAt: this.lastErrorAt,
     };
   }
 
@@ -391,70 +448,21 @@ export class OnlineSignalsManager {
     return context;
   }
 
-  /**
-   * Register event handlers
-   */
-  private registerEventHandlers(): void {
-    // Listen for sign in command
-    const signInDisposable = vscode.commands.registerCommand(
-      'mojiProctor.signIn',
-      () => this.signIn()
-    );
+  async handleSignedIn(): Promise<void> {
+    if (!this.isStarted || !this.signalBatcher) {
+      return;
+    }
+    this.signalBatcher.resume();
+    await this.signalBatcher.flushAll({ force: true });
+    this.statusEmitter.fire();
+  }
 
-    // Listen for sign out command
-    const signOutDisposable = vscode.commands.registerCommand(
-      'mojiProctor.signOut',
-      () => this.signOut()
-    );
-
-    // Force resume command (debug/recovery)
-    const forceResumeDisposable = vscode.commands.registerCommand(
-      'mojiProctor.forceResume',
-      async () => {
-        const authStatus = await this.getAuthStatus();
-        if (!authStatus.authenticated) {
-          vscode.window.showWarningMessage('Please sign in first before resuming uploads.');
-          return;
-        }
-        await this.forceResume();
-        const stats = this.getStats();
-        vscode.window.showInformationMessage(
-          `Batcher resumed. Queue: ${stats.queueSize} signals, Paused: ${stats.isPaused}`
-        );
-      }
-    );
-
-    // Auth service emits these commands; keep them registered to avoid unhandled rejections
-    const signedInDisposable = vscode.commands.registerCommand(
-      'mojiProctor.signedIn',
-      async () => {
-        if (!this.isStarted || !this.signalBatcher) {
-          return;
-        }
-        console.log('[OnlineSignalsManager] signedIn event received, resuming batcher');
-        this.signalBatcher.resume();
-        await this.signalBatcher.flushAll({ force: true });
-      }
-    );
-
-    const signedOutDisposable = vscode.commands.registerCommand(
-      'mojiProctor.signedOut',
-      () => {
-        if (!this.isStarted || !this.signalBatcher) {
-          return;
-        }
-        this.signalBatcher.pause();
-      }
-    );
-
-    // Add to subscriptions
-    this.context.subscriptions.push(
-      signInDisposable,
-      signOutDisposable,
-      signedInDisposable,
-      signedOutDisposable,
-      forceResumeDisposable
-    );
+  handleSignedOut(): void {
+    if (!this.isStarted || !this.signalBatcher) {
+      return;
+    }
+    this.signalBatcher.pause('auth_error');
+    this.statusEmitter.fire();
   }
 
   /**
@@ -476,15 +484,15 @@ export class OnlineSignalsManager {
         .then((response) => {
           if (response.ok && !this._isOnline) {
             this._isOnline = true;
+            this.statusEmitter.fire();
             if (this.signalBatcher) {
               // Only resume if paused due to offline status, NOT due to auth error
               // Auth errors require user to re-authenticate
               const pauseReason = this.signalBatcher.getPauseReason();
               if (pauseReason === 'offline' || pauseReason === null) {
-                console.log('[OnlineSignalsManager] Network restored, resuming batcher');
                 this.signalBatcher.resume();
               } else {
-                console.log('[OnlineSignalsManager] Network restored but batcher paused for:', pauseReason);
+                this.log(`Network restored but batcher paused for: ${pauseReason}`);
               }
             }
           }
@@ -492,6 +500,7 @@ export class OnlineSignalsManager {
         .catch(() => {
           if (this._isOnline) {
             this._isOnline = false;
+            this.statusEmitter.fire();
             if (this.signalBatcher) {
               // Only pause if not already paused for a more serious reason (auth_error)
               const pauseReason = this.signalBatcher.getPauseReason();
@@ -515,6 +524,14 @@ export class OnlineSignalsManager {
     }
     this.stop();
     this.authService.dispose();
+    this.statusEmitter.dispose();
+  }
+
+  private log(message: string): void {
+    if (!this.outputChannel) {
+      return;
+    }
+    this.outputChannel.appendLine(`[OnlineSignals] ${message}`);
   }
 }
 
@@ -529,7 +546,8 @@ export class OnlineSignalsManager {
 export function createOnlineSignalsManager(
   context: vscode.ExtensionContext,
   workspaceRoot: string,
-  config: OnlineSignalsConfig
+  config: OnlineSignalsConfig,
+  outputChannel?: vscode.OutputChannel
 ): OnlineSignalsManager {
-  return new OnlineSignalsManager(context, workspaceRoot, config);
+  return new OnlineSignalsManager(context, workspaceRoot, config, outputChannel);
 }

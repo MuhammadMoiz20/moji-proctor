@@ -1,0 +1,64 @@
+{
+  "created_at": "2026-01-30T20:56:45.394Z",
+  "log_head_hash": "5ac907f95d220e27de7eb0b7c9c69e66e0263605f4e52928da1e353075c890fb",
+  "files": [
+    {
+      "path": ".gitignore",
+      "sha256": "fd313f03b95ae9a0faee9f93c629c3a07b328aace4fe9354033f7ce6db086e6b",
+      "size": 230,
+      "mtime": 1769542967,
+      "lineCount": 27
+    },
+    {
+      "path": "ASSIGNMENT.md",
+      "sha256": "36754bedefbc2b1ab780e446456a43a0f0b7d95d60c674f7f339b6b3ab6a5e97",
+      "size": 1099,
+      "mtime": 1769542967,
+      "lineCount": 40
+    },
+    {
+      "path": "moji-proctor.config.json",
+      "sha256": "bd1bf7a5e460c4710d7597848653e9298db8d7e9971f1b3a8245ac9b06df3646",
+      "size": 520,
+      "mtime": 1769802783,
+      "lineCount": 25
+    },
+    {
+      "path": "README.md",
+      "sha256": "263aa09eb307f0bd7fb6330279f9235fd5b1e738acdb66466bb31b574a90978e",
+      "size": 602,
+      "mtime": 1769805753,
+      "lineCount": 30
+    },
+    {
+      "path": "src/array_utils.js",
+      "sha256": "90ddd3a18246cfea501d27943c260d292e2117b74c77bb6d05e20c40ebd3e5e9",
+      "size": 1555,
+      "mtime": 1769542968,
+      "lineCount": 71
+    },
+    {
+      "path": "src/calculator.py",
+      "sha256": "a64abb42ae11d1f1415857791cc60404d5437d1bb9b498caaee6ba786fbc4d19",
+      "size": 924,
+      "mtime": 1769542967,
+      "lineCount": 37
+    },
+    {
+      "path": "src/string_utils.py",
+      "sha256": "e34375ec86242169140f4ac9400cc12000d0b7832a65553d27d8a4cc120b3518",
+      "size": 1029,
+      "mtime": 1769542967,
+      "lineCount": 37
+    },
+    {
+      "path": "TESTING_GUIDE.md",
+      "sha256": "df8e90afcf05333f3e06eba07ac83f3cec8c813aa4ad645504c7900f939835ba",
+      "size": 5479,
+      "mtime": 1769801519,
+      "lineCount": 184
+    }
+  ],
+  "session_id": "62e26e8c-345a-4c6c-8796-8d2d1cdb0c70",
+  "checkpoint_id": "9903057e-15df-49b0-8e1d-f271d351bc47"
+}
